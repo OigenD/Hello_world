@@ -1,0 +1,44 @@
+---
+- name: Deploy script
+  hosts: all
+  become: yes
+  tasks:
+    - name: Deploy scr hello_world
+      copy:
+        src: hello_world.py
+        dest: /usr/local/bin/hello_world.py
+        mode: '0755'
+
+    - name: Scr service
+      template:
+        src: hello_world.service
+        dest: /etc/systemd/system/hello_world.service
+        mode: '0644'
+
+    - name: Scr timer
+      template:
+        src: hello_world.timer
+        dest: /etc/systemd/system/hello_world.timer
+        mode: '0644'
+
+    - name: Scr override.conf 
+      template:
+        src: override.conf
+        dest: /etc/systemd/system/hello_world.service.d/override.conf
+        mode: '0644'
+        create: yes
+
+    - name: Reboot systemd
+      command: systemctl daemon-reload
+
+    - name: Start service
+      systemd:
+        name: hello_world
+        enabled: yes
+        state: started
+
+    - name: Start timer
+      systemd:
+        name: hello_world.timer
+        enabled: yes
+        state: started

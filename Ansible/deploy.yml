@@ -1,6 +1,6 @@
 ---
 - name: Deploy script
-  hosts: all
+  hosts: local
   become: yes
   tasks:
     - name: Deploy scr hello_world

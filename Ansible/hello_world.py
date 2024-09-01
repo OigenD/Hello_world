@@ -6,7 +6,7 @@ import sys
 print("hello world")
 print(f"MY_VAR: {os.getenv('MY_VAR')}")
 time.sleep(10)
-sys.exit(1)
+sys.exit(0)
 
 
 #import time

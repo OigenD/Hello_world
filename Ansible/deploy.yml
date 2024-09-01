@@ -1,44 +1,66 @@
 ---
-- name: Deploy script
-  hosts: local
-  become: yes
+- name: Deploy and execute Python script
+  hosts: all
+  gather_facts: no
   tasks:
+    - name: Ping
+      ansible.builtin.ping:
+
     - name: Deploy scr hello_world
-      copy:
+      ansible.builtin.copy:
         src: hello_world.py
         dest: /usr/local/bin/hello_world.py
         mode: '0755'
 
-    - name: Scr service
-      template:
+    - name: Execute Python script
+      ansible.builtin.command:
+        cmd: python3 /usr/local/bin/hello_world.py
+      register: script_output
+      failed_when: script_output.rc not in [0, 1]
+
+    - name: Print script output
+      ansible.builtin.debug:
+        msg: "{{ script_output.stdout }}"
+
+    - name: Deploy systemd service file for hello_world
+      ansible.builtin.template:
         src: hello_world.service
         dest: /etc/systemd/system/hello_world.service
         mode: '0644'
+      notify: Reload systemd
 
-    - name: Scr timer
-      template:
+    - name: Create directory for systemd override files
+      ansible.builtin.file:
+        path: /etc/systemd/system/hello_world.service.d
+        state: directory
+        mode: '0755'
+
+    - name: Deploy systemd override file for hello_world
+      ansible.builtin.template:
+        src: override.conf
+        dest: /etc/systemd/system/hello_world.service.d/override.conf
+      notify: Reload systemd
+
+    - name: Deploy systemd timer file for hello_world
+      ansible.builtin.template:
         src: hello_world.timer
         dest: /etc/systemd/system/hello_world.timer
         mode: '0644'
+      notify: Reload systemd
 
-    - name: Scr override.conf 
-      template:
-        src: override.conf
-        dest: /etc/systemd/system/hello_world.service.d/override.conf
-        mode: '0644'
-        create: yes
-
-    - name: Reboot systemd
-      command: systemctl daemon-reload
-
-    - name: Start service
-      systemd:
+    - name: Check status of hello_world service
+      ansible.builtin.systemd:
         name: hello_world
-        enabled: yes
         state: started
+        enabled: yes
 
-    - name: Start timer
-      systemd:
+    - name: Check status of hello_world timer
+      ansible.builtin.systemd:
         name: hello_world.timer
-        enabled: yes
         state: started
+        enabled: yes
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.command:
+        cmd: systemctl daemon-reload

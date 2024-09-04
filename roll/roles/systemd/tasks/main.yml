@@ -1,0 +1,11 @@
+- name: Check status of hello_world service
+  ansible.builtin.systemd:
+    name: hello_world
+    state: started
+    enabled: yes
+
+- name: Check status of hello_world timer
+  ansible.builtin.systemd:
+    name: hello_world.timer
+    state: started
+    enabled: yes

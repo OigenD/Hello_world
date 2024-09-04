@@ -1,0 +1,16 @@
+- name: Deploy script hello_world
+  ansible.builtin.copy:
+    src: hello_world.py
+    dest: /usr/local/bin/hello_world.py
+    mode: '0755'
+
+# Uncomment the following lines if you want to execute the script
+# - name: Execute Python script
+#   ansible.builtin.command:
+#     cmd: python3 /usr/local/bin/hello_world.py
+#   register: script_output
+#   failed_when: script_output.rc not in [0, 1]
+
+# - name: Print script output
+#   ansible.builtin.debug:
+#     msg: "{{ script_output.stdout }}"

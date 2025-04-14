@@ -16,9 +16,9 @@ import json
 from typing import List, Dict, Any
 
 # --- Конфигурация ---
-GITLAB_URL = os.environ.get("GITLAB_URL", "https://gitlab.fc.uralsibbank.ru").rstrip('/')
+GITLAB_URL = os.environ.get("GITLAB_URL", "https://gitlab").rstrip('/')
 GITLAB_TOKEN = os.environ.get("gitlab_token")
-SONARQUBE_URL = os.environ.get("SONARQUBE_URL", "https://sonarqube.sre.fc.uralsibbank.ru").rstrip('/')
+SONARQUBE_URL = os.environ.get("SONARQUBE_URL", "https://sonarqube").rstrip('/')
 SONARQUBE_TOKEN = os.environ.get("sonarqube_token")
 ADMIN_GROUP = "sre-platfom-support"
 

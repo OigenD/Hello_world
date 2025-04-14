@@ -10,3 +10,511 @@
 
 Аутентификация в SonarQube выполняется только с использованием токена.
 """
+
+import os
+import sys
+import requests
+import json
+
+# --- Переменные окружения ---
+GITLAB_URL = os.environ.get("GITLAB_URL", "https://gitlab.fc.uralsibbank.ru")
+GITLAB_TOKEN = os.environ.get("gitlab_token")
+SONARQUBE_URL = os.environ.get("SONARQUBE_URL", "https://sonarqube.sre.fc.uralsibbank.ru/")
+SONARQUBE_TOKEN = os.environ.get("sonarqube_token")
+
+# Проверка наличия токенов
+if not GITLAB_TOKEN:
+    print("Ошибка: Переменная окружения 'gitlab_token' не установлена.")
+    sys.exit(1)
+if not SONARQUBE_TOKEN:
+    print("Ошибка: Переменная окружения 'sonarqube_token' не установлена.")
+    sys.exit(1)
+
+# Удаляем лишние пробелы из токена
+SONARQUBE_TOKEN = SONARQUBE_TOKEN.strip()
+GITLAB_TOKEN = GITLAB_TOKEN.strip()
+
+# Группа с правами администратора (исключение)
+ADMIN_GROUP = "sre-platfom-support"
+
+# --- Заголовки для SonarQube API (только токен) ---
+SONARQUBE_BEARER_HEADERS = {
+    "Authorization": f"Bearer {SONARQUBE_TOKEN}",
+    "Content-Type": "application/x-www-form-urlencoded"
+}
+
+# --- Скрипт 1: Синхронизация групп из GitLab в SonarQube ---
+def script1():
+    """
+    Синхронизирует группы из GitLab в SonarQube.
+    - Получает список групп из GitLab (без родительских групп).
+    - Проверяет их наличие в SonarQube.
+    - Создает отсутствующие группы.
+    """
+    print("=== Начало Script 1: Синхронизация групп из GitLab в SonarQube ===")
+
+    def get_gitlab_groups():
+        """Получает список групп из GitLab (без родительских групп)."""
+        page = 1
+        all_groups = []
+
+        while True:
+            url = f"{GITLAB_URL}/api/v4/groups?page={page}&per_page=100"
+            headers = {"PRIVATE-TOKEN": GITLAB_TOKEN}
+
+            try:
+                response = requests.get(url, headers=headers, timeout=10)
+                response.raise_for_status()
+            except requests.RequestException as e:
+                print(f"Ошибка при запросе к GitLab API: {e}")
+                raise
+
+            groups = response.json()
+            if not groups:
+                break
+
+            # Фильтруем группы без родительской группы
+            new_groups = [group['name'] for group in groups if group.get('parent_id') is None]
+            all_groups.extend(new_groups)
+            page += 1
+
+        print(f"Получено {len(all_groups)} групп из GitLab.")
+        return all_groups
+
+    def check_sonarqube_group_exists(group_name):
+        """Проверяет, существует ли группа в SonarQube, используя токен."""
+        url = f"{SONARQUBE_URL}/api/user_groups/search?name={group_name}"
+        try:
+            response = requests.get(url, headers=SONARQUBE_BEARER_HEADERS, timeout=10)
+            response.raise_for_status()
+            # Добавляем отладочный вывод для проверки ответа
+            print(f"Ответ от SonarQube для группы '{group_name}': {response.text}")
+            # Проверяем, что ответ не пустой и является валидным JSON
+            if not response.text:
+                print(f"Ошибка: SonarQube вернул пустой ответ для группы '{group_name}'.")
+                return False
+            try:
+                data = response.json()
+            except json.JSONDecodeError as e:
+                print(f"Ошибка декодирования JSON для группы '{group_name}': {e}")
+                print(f"Текст ответа: {response.text}")
+                return False
+            # Проверяем наличие группы
+            exists = any(group['name'] == group_name for group in data.get('groups', []))
+            print(f"Группа '{group_name}' {'существует' if exists else 'не найдена'} в SonarQube.")
+            return exists
+        except requests.RequestException as e:
+            print(f"Ошибка при проверке группы '{group_name}' в SonarQube: {e}")
+            print(f"Код ответа: {response.status_code if 'response' in locals() else 'нет ответа'}")
+            print(f"Текст ответа: {response.text if 'response' in locals() else 'нет текста'}")
+            raise
+
+    def create_sonarqube_group(group_name):
+        """Создает группу в SonarQube, используя токен."""
+        payload = {
+            'name': group_name,
+            'description': 'Group imported from GitLab'
+        }
+        url = f"{SONARQUBE_URL}/api/user_groups/create"
+        try:
+            response = requests.post(url, headers=SONARQUBE_BEARER_HEADERS, data=payload, timeout=10)
+            response.raise_for_status()
+            print(f"Группа '{group_name}' успешно создана в SonarQube.")
+        except requests.RequestException as e:
+            print(f"Код ответа: {response.status_code if 'response' in locals() else 'нет ответа'}")
+            print(f"Текст ответа: {response.text if 'response' in locals() else 'нет текста'}")
+            try:
+                error_message = response.json().get('errors', [{}])[0].get('msg', 'Неизвестная ошибка')
+                print(f"Ошибка при создании группы '{group_name}' в SonarQube: {error_message}")
+            except (json.JSONDecodeError, AttributeError):
+                print(f"Ошибка при создании группы '{group_name}' в SonarQube: {e}")
+            raise
+
+    # Основная логика
+    print("Получение списка групп из GitLab...")
+    try:
+        groups = get_gitlab_groups()
+    except Exception as e:
+        print(f"Не удалось получить группы из GitLab: {e}")
+        raise
+
+    if not groups:
+        print("Нет групп в GitLab, удовлетворяющих условию (parent_id == null).")
+        raise Exception("Нет групп для синхронизации.")
+
+    for group_name in groups:
+        if group_name == ADMIN_GROUP:
+            print(f"Группа '{group_name}' пропущена (исключение).")
+            continue
+
+        print(f"Обработка группы: {group_name}")
+        try:
+            if check_sonarqube_group_exists(group_name):
+                continue
+            print(f"Группа '{group_name}' не найдена в SonarQube. Создание...")
+            create_sonarqube_group(group_name)
+        except Exception as e:
+            print(f"Ошибка при обработке группы '{group_name}': {e}")
+            raise
+
+    print("=== Script 1 завершен успешно ===")
+
+# --- Скрипт 2: Обновление списка разрешенных групп для авторизации через GitLab ---
+def script2():
+    """
+    Обновляет список разрешенных групп для авторизации через GitLab в SonarQube.
+    - Получает список групп из SonarQube.
+    - Обновляет настройку sonar.auth.gitlab.allowedGroups.
+    """
+    print("=== Начало Script 2: Обновление разрешенных групп для авторизации через GitLab ===")
+
+    BASE_URL_GET = f"{SONARQUBE_URL}/api/user_groups/search"
+    BASE_URL_SET = f"{SONARQUBE_URL}/api/settings/set"
+    KEY_SETTING = "sonar.auth.gitlab.allowedGroups"
+
+    def get_user_groups():
+        """Получает список групп пользователей из SonarQube."""
+        try:
+            response = requests.get(BASE_URL_GET, headers=SONARQUBE_BEARER_HEADERS, timeout=10)
+            response.raise_for_status()
+            print(f"Ответ от SonarQube: {response.text}")
+            if not response.text:
+                print("Ошибка: SonarQube вернул пустой ответ.")
+                return []
+            data = response.json()
+            groups = [group["name"] for group in data.get("groups", [])]
+            print(f"Найдено {len(groups)} групп в SonarQube: {groups}")
+            return groups
+        except requests.RequestException as e:
+            print(f"Ошибка при получении групп пользователей: {e}")
+            print(f"Код ответа: {response.status_code if 'response' in locals() else 'нет ответа'}")
+            print(f"Текст ответа: {response.text if 'response' in locals() else 'нет текста'}")
+            raise
+        except json.JSONDecodeError as e:
+            print(f"Ошибка декодирования JSON: {e}")
+            print(f"Текст ответа: {response.text if 'response' in locals() else 'нет текста'}")
+            raise
+
+    def update_allowed_groups(groups):
+        """Обновляет список разрешенных групп в настройках SonarQube."""
+        data = [("key", KEY_SETTING)]
+        for group in groups:
+            data.append(("values", group))
+
+        try:
+            response = requests.post(BASE_URL_SET, headers=SONARQUBE_BEARER_HEADERS, data=data, timeout=10)
+            response.raise_for_status()
+            print(f"Успешно обновлены разрешённые группы: {groups} (Статус: {response.status_code})")
+        except requests.RequestException as e:
+            print(f"Ошибка при обновлении групп: {e}")
+            print(f"Код ответа: {response.status_code if 'response' in locals() else 'нет ответа'}")
+            print(f"Текст ответа: {response.text if 'response' in locals() else 'нет текста'}")
+            raise
+
+    # Основная логика
+    print("Получение списка групп пользователей из SonarQube...")
+    try:
+        user_groups = get_user_groups()
+    except Exception as e:
+        print(f"Не удалось получить группы: {e}")
+        raise
+
+    if not user_groups:
+        print("Список групп пользователей пуст. Нечего обновлять.")
+        return
+
+    print("Начало обновления разрешённых групп для авторизации через GitLab...")
+    try:
+        update_allowed_groups(user_groups)
+    except Exception as e:
+        print(f"Не удалось обновить группы: {e}")
+        raise
+
+    print("=== Script 2 завершен успешно ===")
+
+# --- Скрипт 3: Назначение прав группам на проекты в SonarQube ---
+def script3():
+    """
+    Назначает права группам на проекты в SonarQube.
+    - Сопоставляет группы с проектами по префиксу ключа проекта.
+    - Назначает права (codeviewer, issueadmin, scan) группам для соответствующих проектов.
+    """
+    print("=== Начало Script 3: Назначение прав группам на проекты ===")
+
+    def get_groups():
+        """Получает список групп из SonarQube."""
+        url = f"{SONARQUBE_URL}/api/user_groups/search"
+        try:
+            response = requests.get(url, headers=SONARQUBE_BEARER_HEADERS, timeout=10)
+            response.raise_for_status()
+            print(f"Ответ от SonarQube: {response.text}")
+            if not response.text:
+                print("Ошибка: SonarQube вернул пустой ответ.")
+                return []
+            data = response.json()
+            groups = [group["name"] for group in data.get("groups", [])]
+            print(f"Получено {len(groups)} групп: {groups}")
+            return groups
+        except requests.RequestException as e:
+            print(f"Ошибка при получении списка групп: {e}")
+            print(f"Код ответа: {response.status_code if 'response' in locals() else 'нет ответа'}")
+            print(f"Текст ответа: {response.text if 'response' in locals() else 'нет текста'}")
+            raise
+        except json.JSONDecodeError as e:
+            print(f"Ошибка декодирования JSON: {e}")
+            print(f"Текст ответа: {response.text if 'response' in locals() else 'нет текста'}")
+            raise
+
+    def get_projects():
+        """Получает список проектов из SonarQube."""
+        url = f"{SONARQUBE_URL}/api/projects/search"
+        try:
+            response = requests.get(url, headers=SONARQUBE_BEARER_HEADERS, timeout=10)
+            response.raise_for_status()
+            print(f"Ответ от SonarQube: {response.text}")
+            if not response.text:
+                print("Ошибка: SonarQube вернул пустой ответ.")
+                return []
+            data = response.json()
+            projects = data.get("components", [])
+            print(f"Получено {len(projects)} проектов.")
+            return projects
+        except requests.RequestException as e:
+            print(f"Ошибка при получении списка проектов: {e}")
+            print(f"Код ответа: {response.status_code if 'response' in locals() else 'нет ответа'}")
+            print(f"Текст ответа: {response.text if 'response' in locals() else 'нет текста'}")
+            raise
+        except json.JSONDecodeError as e:
+            print(f"Ошибка декодирования JSON: {e}")
+            print(f"Текст ответа: {response.text if 'response' in locals() else 'нет текста'}")
+            raise
+
+    def assign_permissions(group_name, project_key):
+        """Назначает права группе на проект."""
+        permissions = ["codeviewer", "issueadmin", "scan"]
+        url = f"{SONARQUBE_URL}/api/permissions/add_group"
+        for permission in permissions:
+            data = {
+                "groupName": group_name,
+                "projectKey": project_key,
+                "permission": permission
+            }
+            try:
+                response = requests.post(url, headers=SONARQUBE_BEARER_HEADERS, data=data, timeout=10)
+                if response.status_code == 204:
+                    print(f"Права '{permission}' выданы группе '{group_name}' для проекта '{project_key}'")
+                else:
+                    print(f"Ошибка при выдаче прав '{permission}' для {group_name}/{project_key}: {response.text}")
+            except requests.RequestException as e:
+                print(f"Ошибка при назначении прав: {e}")
+                print(f"Код ответа: {response.status_code if 'response' in locals() else 'нет ответа'}")
+                print(f"Текст ответа: {response.text if 'response' in locals() else 'нет текста'}")
+                raise
+
+    # Основная логика
+    try:
+        groups = get_groups()
+        projects = get_projects()
+    except Exception as e:
+        print(f"Не удалось получить группы или проекты: {e}")
+        raise
+
+    for project in projects:
+        project_key = project["key"]
+        project_parts = project_key.split(":")
+        if not project_parts:
+            print(f"Некорректный ключ проекта: {project_key}")
+            continue
+
+        project_group_prefix = project_parts[0]
+        for group in groups:
+            if project_group_prefix == group:
+                print(f"Обнаружено соответствие: группа '{group}' → проект '{project_key}'")
+                try:
+                    assign_permissions(group, project_key)
+                except Exception as e:
+                    print(f"Ошибка при назначении прав для группы '{group}' и проекта '{project_key}': {e}")
+                    raise
+
+    print("=== Script 3 завершен успешно ===")
+
+# --- Скрипт 4: Перевод проектов в приватный режим и добавление права на создание проектов ---
+def script4():
+    """
+    Переводит проекты в приватный режим и добавляет группам право на создание проектов.
+    - Переводит все проекты в приватный режим.
+    - Добавляет группам право 'provisioning' (создание проектов).
+    """
+    print("=== Начало Script 4: Приватизация проектов и добавление права на создание ===")
+
+    def sonarqube_request(method, endpoint, data=None):
+        """Выполняет запрос к SonarQube API."""
+        url = f"{SONARQUBE_URL}{endpoint}"
+        try:
+            response = requests.request(method, url, headers=SONARQUBE_BEARER_HEADERS, data=data, timeout=10)
+            return response
+        except requests.RequestException as e:
+            print(f"Ошибка при запросе к SonarQube: {e}")
+            raise
+
+    def get_sonarqube_projects():
+        """Получает список всех проектов в SonarQube."""
+        endpoint = "/api/projects/search?ps=500"
+        response = sonarqube_request("GET", endpoint)
+        if response.status_code != 200:
+            print(f"Ошибка при получении списка проектов: {response.status_code} - {response.text}")
+            raise Exception("Не удалось получить проекты.")
+        print(f"Ответ от SonarQube: {response.text}")
+        if not response.text:
+            print("Ошибка: SonarQube вернул пустой ответ.")
+            return []
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            print(f"Ошибка декодирования JSON: {e}")
+            print(f"Текст ответа: {response.text}")
+            raise
+        projects = [component['key'] for component in data.get('components', [])]
+        print(f"Получено {len(projects)} проектов.")
+        return projects
+
+    def get_sonarqube_groups():
+        """Получает список всех групп в SonarQube."""
+        endpoint = "/api/user_groups/search"
+        response = sonarqube_request("GET", endpoint)
+        if response.status_code != 200:
+            print(f"Ошибка при получении списка групп: {response.status_code} - {response.text}")
+            raise Exception("Не удалось получить группы.")
+        print(f"Ответ от SonarQube: {response.text}")
+        if not response.text:
+            print("Ошибка: SonarQube вернул пустой ответ.")
+            return []
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            print(f"Ошибка декодирования JSON: {e}")
+            print(f"Текст ответа: {response.text}")
+            raise
+        groups = [group['name'] for group in data.get('groups', [])]
+        print(f"Получено {len(groups)} групп.")
+        return groups
+
+    def add_create_permission_to_group(group_name):
+        """Добавляет группе право на создание проектов."""
+        endpoint = "/api/permissions/add_group"
+        data = {
+            "permission": "provisioning",
+            "groupName": group_name
+        }
+        response = sonarqube_request("POST", endpoint, data=data)
+        if response.status_code == 204:
+            print(f"Право на создание проектов добавлено для группы: {group_name}")
+        else:
+            print(f"Ошибка при добавлении права для группы {group_name}: {response.text}")
+
+    def check_create_permission(group_name):
+        """Проверяет, есть ли у группы право на создание проектов."""
+        endpoint = f"/api/permissions/groups?groupName={group_name}"
+        response = sonarqube_request("GET", endpoint)
+        if response.status_code != 200:
+            print(f"Ошибка при проверке прав группы {group_name}: {response.status_code} - {response.text}")
+            raise Exception("Не удалось проверить права.")
+        print(f"Ответ от SonarQube: {response.text}")
+        if not response.text:
+            print("Ошибка: SonarQube вернул пустой ответ.")
+            return False
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            print(f"Ошибка декодирования JSON: {e}")
+            print(f"Текст ответа: {response.text}")
+            raise
+        permissions = [perm['permission'] for perm in data.get('permissions', [])]
+        has_permission = "provisioning" in permissions
+        print(f"Группа '{group_name}' {'уже имеет' if has_permission else 'не имеет'} право на создание проектов.")
+        return has_permission
+
+    def set_projects_private(projects):
+        """Переводит проекты в приватный режим."""
+        print("Начинаю перевод проектов в приватный режим...")
+        for project in projects:
+            print(f"Обработка проекта: {project}")
+            endpoint = "/api/projects/update_visibility"
+            data = {'visibility': 'private', 'project': project}
+            response = sonarqube_request("POST", endpoint, data=data)
+            if response.status_code == 204:
+                print(f"Проект {project} успешно переведён в приватный режим.")
+            else:
+                print(f"Ошибка при обработке проекта {project}: {response.text}")
+
+    # Основная логика
+    print("Получение списка проектов из SonarQube...")
+    try:
+        projects = get_sonarqube_projects()
+    except Exception as e:
+        print(f"Не удалось получить проекты: {e}")
+        raise
+
+    if not projects:
+        print("Нет проектов в SonarQube.")
+        return
+
+    try:
+        set_projects_private(projects)
+    except Exception as e:
+        print(f"Не удалось перевести проекты в приватный режим: {e}")
+        raise
+
+    print("Получение списка групп из SonarQube...")
+    try:
+        groups = get_sonarqube_groups()
+    except Exception as e:
+        print(f"Не удалось получить группы: {e}")
+        raise
+
+    if not groups:
+        print("Нет групп в SonarQube.")
+        return
+
+    print("Добавление права на создание проектов для всех групп...")
+    for group in groups:
+        if group == ADMIN_GROUP:
+            print(f"Группа '{group}' пропущена (исключение).")
+            continue
+
+        if check_create_permission(group):
+            continue
+
+        try:
+            add_create_permission_to_group(group)
+        except Exception as e:
+            print(f"Ошибка при добавлении права для группы '{group}': {e}")
+            raise
+
+    print("=== Script 4 завершен успешно ===")
+
+# --- Главная функция для последовательного выполнения всех скриптов ---
+def main():
+    """Запускает все скрипты последовательно."""
+    print("=== Начало выполнения всех скриптов ===")
+
+    scripts = [
+        ("Script 1: Синхронизация групп", script1),
+        ("Script 2: Обновление разрешенных групп", script2),
+        ("Script 3: Назначение прав на проекты", script3),
+        ("Script 4: Приватизация и права на создание", script4)
+    ]
+
+    for script_name, script_func in scripts:
+        print(f"Запуск: {script_name}")
+        try:
+            script_func()
+        except Exception as e:
+            print(f"Ошибка в {script_name}: {e}")
+            sys.exit(1)
+        print(f"{script_name} завершен.\n")
+
+    print("=== Все скрипты выполнены успешно ===")
+
+if __name__ == "__main__":
+    main()

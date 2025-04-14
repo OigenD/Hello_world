@@ -15,6 +15,7 @@ import os
 import sys
 import requests
 import json
+import base64
 
 # --- Переменные окружения ---
 GITLAB_URL = os.environ.get("GITLAB_URL", "https://gitlab.fc.uralsibbank.ru")
@@ -30,16 +31,17 @@ if not SONARQUBE_TOKEN:
     print("Ошибка: Переменная окружения 'sonarqube_token' не установлена.")
     sys.exit(1)
 
-# Удаляем лишние пробелы из токена
+# Удаляем лишние пробелы из токенов
 SONARQUBE_TOKEN = SONARQUBE_TOKEN.strip()
 GITLAB_TOKEN = GITLAB_TOKEN.strip()
 
 # Группа с правами администратора (исключение)
 ADMIN_GROUP = "sre-platfom-support"
 
-# --- Заголовки для SonarQube API (только токен) ---
+# --- Заголовки для SonarQube API (используем базовую аутентификацию) ---
+# Токен передается как имя пользователя, пароль пустой
+SONARQUBE_AUTH = (SONARQUBE_TOKEN, "")
 SONARQUBE_BEARER_HEADERS = {
-    "Authorization": f"Bearer {SONARQUBE_TOKEN}",
     "Content-Type": "application/x-www-form-urlencoded"
 }
 
@@ -85,11 +87,10 @@ def script1():
         """Проверяет, существует ли группа в SonarQube, используя токен."""
         url = f"{SONARQUBE_URL}/api/user_groups/search?name={group_name}"
         try:
-            response = requests.get(url, headers=SONARQUBE_BEARER_HEADERS, timeout=10)
-            response.raise_for_status()
-            # Добавляем отладочный вывод для проверки ответа
+            response = requests.get(url, headers=SONARQUBE_BEARER_HEADERS, auth=SONARQUBE_AUTH, timeout=10)
+            print(f"Код ответа от SonarQube для группы '{group_name}': {response.status_code}")
             print(f"Ответ от SonarQube для группы '{group_name}': {response.text}")
-            # Проверяем, что ответ не пустой и является валидным JSON
+            response.raise_for_status()
             if not response.text:
                 print(f"Ошибка: SonarQube вернул пустой ответ для группы '{group_name}'.")
                 return False
@@ -99,7 +100,6 @@ def script1():
                 print(f"Ошибка декодирования JSON для группы '{group_name}': {e}")
                 print(f"Текст ответа: {response.text}")
                 return False
-            # Проверяем наличие группы
             exists = any(group['name'] == group_name for group in data.get('groups', []))
             print(f"Группа '{group_name}' {'существует' if exists else 'не найдена'} в SonarQube.")
             return exists
@@ -117,7 +117,9 @@ def script1():
         }
         url = f"{SONARQUBE_URL}/api/user_groups/create"
         try:
-            response = requests.post(url, headers=SONARQUBE_BEARER_HEADERS, data=payload, timeout=10)
+            response = requests.post(url, headers=SONARQUBE_BEARER_HEADERS, auth=SONARQUBE_AUTH, data=payload, timeout=10)
+            print(f"Код ответа от SonarQube при создании группы '{group_name}': {response.status_code}")
+            print(f"Ответ от SonarQube: {response.text}")
             response.raise_for_status()
             print(f"Группа '{group_name}' успешно создана в SonarQube.")
         except requests.RequestException as e:
@@ -175,9 +177,10 @@ def script2():
     def get_user_groups():
         """Получает список групп пользователей из SonarQube."""
         try:
-            response = requests.get(BASE_URL_GET, headers=SONARQUBE_BEARER_HEADERS, timeout=10)
-            response.raise_for_status()
+            response = requests.get(BASE_URL_GET, headers=SONARQUBE_BEARER_HEADERS, auth=SONARQUBE_AUTH, timeout=10)
+            print(f"Код ответа от SonarQube: {response.status_code}")
             print(f"Ответ от SonarQube: {response.text}")
+            response.raise_for_status()
             if not response.text:
                 print("Ошибка: SonarQube вернул пустой ответ.")
                 return []
@@ -202,7 +205,9 @@ def script2():
             data.append(("values", group))
 
         try:
-            response = requests.post(BASE_URL_SET, headers=SONARQUBE_BEARER_HEADERS, data=data, timeout=10)
+            response = requests.post(BASE_URL_SET, headers=SONARQUBE_BEARER_HEADERS, auth=SONARQUBE_AUTH, data=data, timeout=10)
+            print(f"Код ответа от SonarQube: {response.status_code}")
+            print(f"Ответ от SonarQube: {response.text}")
             response.raise_for_status()
             print(f"Успешно обновлены разрешённые группы: {groups} (Статус: {response.status_code})")
         except requests.RequestException as e:
@@ -245,9 +250,10 @@ def script3():
         """Получает список групп из SonarQube."""
         url = f"{SONARQUBE_URL}/api/user_groups/search"
         try:
-            response = requests.get(url, headers=SONARQUBE_BEARER_HEADERS, timeout=10)
-            response.raise_for_status()
+            response = requests.get(url, headers=SONARQUBE_BEARER_HEADERS, auth=SONARQUBE_AUTH, timeout=10)
+            print(f"Код ответа от SonarQube: {response.status_code}")
             print(f"Ответ от SonarQube: {response.text}")
+            response.raise_for_status()
             if not response.text:
                 print("Ошибка: SonarQube вернул пустой ответ.")
                 return []
@@ -269,9 +275,10 @@ def script3():
         """Получает список проектов из SonarQube."""
         url = f"{SONARQUBE_URL}/api/projects/search"
         try:
-            response = requests.get(url, headers=SONARQUBE_BEARER_HEADERS, timeout=10)
-            response.raise_for_status()
+            response = requests.get(url, headers=SONARQUBE_BEARER_HEADERS, auth=SONARQUBE_AUTH, timeout=10)
+            print(f"Код ответа от SonarQube: {response.status_code}")
             print(f"Ответ от SonarQube: {response.text}")
+            response.raise_for_status()
             if not response.text:
                 print("Ошибка: SonarQube вернул пустой ответ.")
                 return []
@@ -300,7 +307,9 @@ def script3():
                 "permission": permission
             }
             try:
-                response = requests.post(url, headers=SONARQUBE_BEARER_HEADERS, data=data, timeout=10)
+                response = requests.post(url, headers=SONARQUBE_BEARER_HEADERS, auth=SONARQUBE_AUTH, data=data, timeout=10)
+                print(f"Код ответа от SonarQube: {response.status_code}")
+                print(f"Ответ от SonarQube: {response.text}")
                 if response.status_code == 204:
                     print(f"Права '{permission}' выданы группе '{group_name}' для проекта '{project_key}'")
                 else:
@@ -351,7 +360,9 @@ def script4():
         """Выполняет запрос к SonarQube API."""
         url = f"{SONARQUBE_URL}{endpoint}"
         try:
-            response = requests.request(method, url, headers=SONARQUBE_BEARER_HEADERS, data=data, timeout=10)
+            response = requests.request(method, url, headers=SONARQUBE_BEARER_HEADERS, auth=SONARQUBE_AUTH, data=data, timeout=10)
+            print(f"Код ответа от SonarQube: {response.status_code}")
+            print(f"Ответ от SonarQube: {response.text}")
             return response
         except requests.RequestException as e:
             print(f"Ошибка при запросе к SonarQube: {e}")
@@ -364,7 +375,6 @@ def script4():
         if response.status_code != 200:
             print(f"Ошибка при получении списка проектов: {response.status_code} - {response.text}")
             raise Exception("Не удалось получить проекты.")
-        print(f"Ответ от SonarQube: {response.text}")
         if not response.text:
             print("Ошибка: SonarQube вернул пустой ответ.")
             return []
@@ -385,7 +395,6 @@ def script4():
         if response.status_code != 200:
             print(f"Ошибка при получении списка групп: {response.status_code} - {response.text}")
             raise Exception("Не удалось получить группы.")
-        print(f"Ответ от SonarQube: {response.text}")
         if not response.text:
             print("Ошибка: SonarQube вернул пустой ответ.")
             return []
@@ -419,7 +428,6 @@ def script4():
         if response.status_code != 200:
             print(f"Ошибка при проверке прав группы {group_name}: {response.status_code} - {response.text}")
             raise Exception("Не удалось проверить права.")
-        print(f"Ответ от SonarQube: {response.text}")
         if not response.text:
             print("Ошибка: SonarQube вернул пустой ответ.")
             return False

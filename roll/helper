@@ -1,602 +1,795 @@
-{{- define "vmagent.args" -}}
-  {{- $args := default dict -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- if empty $Values.remoteWrite -}}
-    {{- fail "Please define at least one remoteWrite" -}}
-  {{- end -}}
-  {{- $_ := set $args "promscrape.config" "/config/scrape/scrape.yml" -}}
-  {{- $_ := set $args "remoteWrite.tmpDataPath" "/tmpData" -}}
-  {{- $supportedRemoteWriteKeys := list "url" "maxDiskUsagePerURL" "queues" "maxInflightRequests" "tmpDataPath" "sendTimeout" "maxBlockSize" "rateLimit" "label" "headers" -}}
-  {{- range $i, $rw := $Values.remoteWrite -}}
-    {{- if not $rw.url -}}
-      {{- fail (printf "`url` is not set for `remoteWrite` idx %d" $i) -}}
-    {{- end -}}
-    {{- range $rwKey, $rwValue := $rw -}}
-      {{- if not (has $rwKey $supportedRemoteWriteKeys) -}}
-        {{- continue -}}
-      {{- end -}}
-      {{- $key := printf "remoteWrite.%s" $rwKey -}}
-      {{- $param := index $args $key | default list -}}
-      {{- if or (kindIs "slice" $rwValue) (kindIs "map" $rwValue) -}}
-        {{- $param = append $param (printf "/config/rw/%d-%s.yaml" $i $rwKey) -}}
-      {{- else -}}
-        {{- $param = append $param $rwValue -}}
-      {{- end -}}
-      {{- $_ := set $args $key $param -}}
-    {{- end -}}
-  {{- end -}}
-  {{- $args = mergeOverwrite $args (fromYaml (include "vm.license.flag" .)) -}}
-  {{- $args = mergeOverwrite $args $Values.extraArgs -}}
-  {{- if and (eq $Values.mode "statefulSet") $Values.statefulSet.clusterMode -}}
-    {{- $_ := set $args "promscrape.cluster.membersCount" $Values.replicaCount -}}
-    {{- $_ := set $args "promscrape.cluster.replicationFactor" $Values.statefulSet.replicationFactor -}}
-    {{- $_ := set $args "promscrape.cluster.memberNum" "$(POD_NAME)" -}}
-  {{- end -}}
-  {{- toYaml (fromYaml (include "vm.args" $args)).args -}}
-{{- end -}}
+# Default values for victoria-metrics-agent.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
 
-{{- define "vmagent.rw.config" -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $rwcm := default dict -}}
-  {{- range $i, $rw := $Values.remoteWrite -}}
-    {{- range $rwKey, $rwValue := $rw -}}
-      {{- if or (kindIs "slice" $rwValue) (kindIs "map" $rwValue) -}}
-        {{- $_ := set $rwcm (printf "%d-%s.yaml" $i $rwKey) (toYaml $rwValue) -}}
-      {{- end -}}
-    {{- end -}}
-  {{- end -}}
-  {{- toYaml $rwcm -}}
-{{- end -}}
+namespace:
+  name: monitoring  # Имя неймспейса
+  create: true
 
-{{- define "vmagent.scrape.config.name" -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $fullname := include "vm.plain.fullname" . -}}
-  {{- $Values.configMap | default (printf "%s-config" $fullname) -}}
-{{- end -}}
+global:
+  # -- Image pull secrets, that can be shared across multiple helm charts
+  imagePullSecrets: []
+  image:
+    # -- Image registry, that can be shared across multiple helm charts
+    registry: ""
+  # -- Openshift security context compatibility configuration
+  compatibility:
+    openshift:
+      adaptSecurityContext: "auto"
+  cluster:
+    # -- K8s cluster domain suffix, uses for building storage pods' FQDN. Details are [here](https://kubernetes.io/docs/tasks/administer-cluster/dns-custom-nameservers/)
+    dnsDomain: cluster.local.
 
-{{- define "vm.namespace" -}}
-  {{- include "vm.validate.args" . -}}
-  {{- $Release := (.helm).Release | default .Release -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $Values.namespaceOverride | default ($Values.global).namespaceOverride | default $Release.Namespace -}}
-{{- end -}}
+# -- Replica count     
+replicaCount: 1
+revisionHistoryLimit: 1
 
-{{- define "vm.validate.args" -}}
-  {{- $Chart := (.helm).Chart | default .Chart -}}
-  {{- $Capabilities := (.helm).Capabilities | default .Capabilities -}}
-  {{- if semverCompare "<3.14.0" $Capabilities.HelmVersion.Version -}}
-    {{- fail "This chart requires helm version 3.14.0 or higher" -}}
-  {{- end -}}
-  {{- if empty $Chart -}}
-    {{- fail "invalid template data" -}}
-  {{- end -}}
-{{- end -}}
+# -- Specify pod lifecycle
+lifecycle: {}
 
-{{- define "vm.name" -}}
-  {{- include "vm.validate.args" . -}}
-  {{- $Chart := (.helm).Chart | default .Chart -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $nameOverride := $Values.nameOverride | default ($Values.global).nameOverride | default $Chart.Name -}}
-  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
-    {{- $nameOverride -}}
-  {{- else -}}
-    {{- $nameOverride | trunc 63 | trimSuffix "-" -}}
-  {{- end -}}
-{{- end -}}
+# -- Use an alternate scheduler, e.g. "stork". Check details [here](https://kubernetes.io/docs/tasks/administer-cluster/configure-multiple-schedulers/)
+schedulerName: ""
 
-{{- define "vm.fullname" -}}
-  {{- include "vm.validate.args" . -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $Chart := (.helm).Chart | default .Chart -}}
-  {{- $Release := (.helm).Release | default .Release -}}
-  {{- $fullname := "" -}}
-  {{- if $Values.fullnameOverride -}}
-    {{- $fullname = $Values.fullnameOverride -}}
-  {{- else if ($Values.global).fullnameOverride -}}
-    {{- $fullname = $Values.global.fullnameOverride -}}
-  {{- else -}}
-    {{- $name := default $Chart.Name $Values.nameOverride -}}
-    {{- if contains $name $Release.Name -}}
-      {{- $fullname = $Release.Name -}}
-    {{- else -}}
-      {{- $fullname = (printf "%s-%s" $Release.Name $name) -}}
-    {{- end -}}
-  {{- end -}}
-  {{- $fullname = tpl $fullname . -}}
-  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
-    {{- $fullname -}}
-  {{- else -}}
-    {{- $fullname | trunc 63 | trimSuffix "-" -}}
-  {{- end -}}
-{{- end -}}
+# -- VMAgent mode: daemonSet, deployment, statefulSet
+mode: deployment
 
-{{- define "vm.cr.fullname" -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $_ := set . "overrideKey" "name" -}}
-  {{- $fullname := include "vm.internal.key" . -}}
-  {{- $_ := unset . "overrideKey" -}}
-  {{- if empty $fullname -}}
-    {{- $fullname = include "vm.fullname" . -}}
-  {{- end -}}
-  {{- $fullname = tpl $fullname . -}}
-  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
-    {{- $fullname -}}
-  {{- else -}}
-    {{- $fullname | trunc 63 | trimSuffix "-" -}}
-  {{- end -}}
-{{- end -}}
+# -- [K8s DaemonSet](https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/) specific variables
+daemonSet:
+  spec: {}
 
-{{- define "vm.managed.fullname" -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $_ := set . "overrideKey" "name" -}}
-  {{- $fullname := include "vm.internal.key" . -}}
-  {{- $_ := unset . "overrideKey" -}}
-  {{- if empty $fullname -}}
-    {{- $fullname = include "vm.fullname" . -}}
-  {{- end -}}
-  {{- with include "vm.internal.key.default" . -}}
-    {{- $prefix := ternary . (printf "vm%s" .) (or (hasPrefix "vm" .) (hasPrefix "vl" .)) -}}
-    {{- $fullname = printf "%s-%s" $prefix $fullname -}}
-  {{- end -}}
-  {{- $fullname = tpl $fullname . -}}
-  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
-    {{- $fullname -}}
-  {{- else -}}
-    {{- $fullname | trunc 63 | trimSuffix "-" -}}
-  {{- end -}}
-{{- end -}}
+# -- [K8s Deployment](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/) specific variables
+deployment:
+  spec:
+    # -- Deployment strategy. Check [here](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy) for details
+    strategy: {}
+     # rollingUpdate:
+     #  maxSurge: 25%
+     #  maxUnavailable: 25%
+     # type: RollingUpdate
 
-{{- define "vm.plain.fullname" -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $_ := set . "overrideKey" "fullnameOverride" -}}
-  {{- $fullname := include "vm.internal.key" . -}}
-  {{- $_ := unset . "overrideKey" -}}
-  {{- if empty $fullname -}}
-    {{- $fullname = include "vm.fullname" . -}}
-    {{- with include "vm.internal.key.default" . -}}
-      {{- $fullname = printf "%s-%s" $fullname . -}}
-    {{- end -}}
-  {{- end -}}
-  {{- $fullname = tpl $fullname . -}}
-  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
-    {{- $fullname -}}
-  {{- else -}}
-    {{- $fullname | trunc 63 | trimSuffix "-" -}}
-  {{- end -}}
-{{- end -}}
+# -- [K8s StatefulSet](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/) specific variables
+statefulSet:
+  # -- create cluster of vmagents. Check [here](https://docs.victoriametrics.com/vmagent#scraping-big-number-of-targets)
+  # available since [v1.77.2](https://github.com/VictoriaMetrics/VictoriaMetrics/releases/tag/v1.77.2)
+  clusterMode: false
+  # -- replication factor for vmagent in cluster mode
+  replicationFactor: 1
+  spec:
+    # -- StatefulSet update strategy. Check [here](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#update-strategies) for details.
+    updateStrategy: {}
+      # type: RollingUpdate
 
-{{- define "vm.internal.key" -}}
-  {{- include "vm.validate.args" . -}}
-  {{- $overrideKey := .overrideKey | default "fullnameOverride" -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $key := "" -}}
-  {{- if .appKey -}}
-    {{- $appKey := ternary (list .appKey) .appKey (kindIs "string" .appKey) -}}
-    {{- $ctx := . -}}
-    {{- $values := $Values -}}
-    {{- range $ak := $appKey -}}
-      {{- $values = ternary (default dict) (index $values $ak | default dict) (empty $values) -}}
-      {{- $ctx = ternary (default dict) (index $ctx $ak | default dict) (empty $ctx) -}}
-      {{- if and (empty $values) (empty $ctx) -}}
-        {{- fail (printf "No data for appKey %s" (join "->" $appKey)) -}}
-      {{- end -}}
-      {{- if and (kindIs "map" $values) (index $values $overrideKey) -}}
-        {{- $key = index $values $overrideKey -}}
-      {{- else if and (kindIs "map" $ctx) (index $ctx $overrideKey) -}}
-        {{- $key = index $ctx $overrideKey -}}
-      {{- end -}}
-    {{- end -}}
-    {{- if and (empty $key) .fallback -}}
-      {{- $key = include "vm.internal.key.default" . -}}
-    {{- end -}}
-  {{- end -}}
-  {{- $key -}}
-{{- end -}}
+image:
+  # -- Image registry
+  registry: "msk-osf01nexus.fc.uralsibbank.ru/dockerhub"
+  # -- Image repository
+  repository: "victoriametrics/vmagent"
+  # -- Image tag, set to `Chart.AppVersion` by default
+  tag: "v1.114.0" # rewrites Chart.AppVersion
+  # -- Variant of the image to use.
+  # e.g. enterprise, scratch
+  variant: ""
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
 
-{{- define "vm.internal.key.default" -}}
-  {{- with .appKey -}}
-    {{- $key := ternary (list .) . (kindIs "string" .) -}}
-    {{- last (without $key "spec") -}}
-  {{- end -}}
-{{- end -}}
+# -- Image pull secrets
+imagePullSecrets: []
 
-{{- define "vm.chart" -}}
-  {{- include "vm.validate.args" . -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $Chart := (.helm).Chart | default .Chart -}}
-  {{- $chart := printf "%s-%s" $Chart.Name $Chart.Version | replace "+" "_" -}}
-  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
-    {{- $chart -}}
-  {{- else -}}
-    {{- $chart | trunc 63 | trimSuffix "-" -}}
-  {{- end -}}
-{{- end -}}
+# -- Override chart name
+nameOverride: "vmagent"
 
-{{- define "vm.sa.name" -}}
-  {{- include "vm.validate.args" . -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- if $Values.serviceAccount.create -}}
-    {{- default (include "vm.fullname" .) $Values.serviceAccount.name -}}
-  {{- else -}}
-    {{- default "default" $Values.serviceAccount.name -}}
-  {{- end -}}
-{{- end -}}
+# -- Override resources fullname
+fullnameOverride: "vmagent"
 
-{{- define "vm.metaLabels" -}}
-  {{- include "vm.validate.args" . -}}
-  {{- $Release := (.helm).Release | default .Release -}}
-  {{- $labels := .extraLabels | default dict -}}
-  {{- $_ := set $labels "helm.sh/chart" (include "vm.chart" .) -}}
-  {{- $_ := set $labels "app.kubernetes.io/managed-by" $Release.Service -}}
-  {{- toYaml $labels -}}
-{{- end -}}
+# -- Container working directory
+containerWorkingDir: "/"
 
-{{- define "vm.podLabels" -}}
-  {{- include "vm.validate.args" . -}}
-  {{- $Release := (.helm).Release | default .Release -}}
-  {{- $labels := fromYaml (include "vm.selectorLabels" .) -}}
-  {{- $labels = mergeOverwrite $labels (.extraLabels | default dict) -}}
-  {{- $_ := set $labels "app.kubernetes.io/managed-by" $Release.Service -}}
-  {{- toYaml $labels -}}
-{{- end -}}
+rbac:
+  # -- Enables Role/RoleBinding creation
+  create: true
 
-{{- define "vm.labels" -}}
-  {{- include "vm.validate.args" . -}}
-  {{- $labels := fromYaml (include "vm.selectorLabels" .) -}}
-  {{- $labels = mergeOverwrite $labels (fromYaml (include "vm.metaLabels" .)) -}}
-  {{- with (include "vm.image.tag" .) -}}
-    {{- $_ := set $labels "app.kubernetes.io/version" (regexReplaceAll "(.*)(@sha.*)" . "${1}") -}}
-  {{- end -}}
-  {{- toYaml $labels -}}
-{{- end -}}
+  # -- Role/RoleBinding annotations
+  annotations: {}
 
-{{- define "vm.image" -}}
-  {{- $image := (fromYaml (include "vm.internal.image" .)).image | default dict -}}
-  {{- $tag := include "vm.image.tag" . -}}
-  {{- if empty $image.repository -}}
-    {{- fail "cannot create image without `.repository` defined" -}}
-  {{- end -}}
-  {{- $result := tpl (printf "%s:%s" $image.repository $tag) . -}}
-  {{- with $image.registry | default "" -}}
-    {{- $result = (printf "%s/%s" . $result) -}}
-  {{- end -}}
-  {{- $result -}}
-{{- end -}}
+  # -- Role/RoleBinding labels
+  extraLabels: {}
 
-{{- define "vm.image.tag" -}}
-  {{- $Chart := (.helm).Chart | default .Chart -}}
-  {{- $image := (fromYaml (include "vm.internal.image" .)).image | default dict -}}
-  {{- $tag := $image.tag -}}
-  {{- if empty $tag -}}
-    {{- $tag = $Chart.AppVersion -}}
-    {{- $variant := $image.variant -}}
-    {{- if eq (include "vm.enterprise.disabled" .) "false" -}}
-      {{- if $variant -}}
-        {{- $variant = printf "enterprise-%s" $variant -}}
-      {{- else -}}
-        {{- $variant = "enterprise" -}}
-      {{- end -}}
-    {{- end -}}
-    {{- with $variant -}}
-      {{- $tag = (printf "%s-%s" $tag .) -}}
-    {{- end -}}
-  {{- end -}}
-  {{- $tag -}}
-{{- end -}}
+  # -- If true and `rbac.enabled`, will deploy a Role/RoleBinding instead of a ClusterRole/ClusterRoleBinding
+  namespaced: false
 
-{{- define "vm.internal.image" -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $values := $Values -}}
-  {{- $ctx := . -}}
-  {{- with .appKey -}}
-    {{- $appKey := ternary (list .) . (kindIs "string" .) -}}
-    {{- range $ak := $appKey -}}
-      {{- $values = ternary (default dict) (index $values $ak | default dict) (empty $values) -}}
-      {{- $ctx = ternary (default dict) (index $ctx $ak | default dict) (empty $ctx) -}}
-      {{- if and (empty $values) (empty $ctx) -}}
-        {{- fail (printf "No data for appKey %s" (join "->" $appKey)) -}}
-      {{- end -}}
-    {{- end -}}
-  {{- end -}}
-  {{- $image := ternary $ctx.image $values.image (hasKey $ctx "image") -}}
-  {{- if not $image.registry -}}
-    {{- if (($Values.global).image).registry -}}
-      {{- $_ := set $image "registry" (($Values.global).image).registry -}}
-    {{- else if hasKey $image "registry" -}}
-      {{- $_ := unset $image "registry" -}}
-    {{- end -}}
-  {{- end -}}
-  {{- toYaml (dict "image" $image) -}}
-{{- end -}}
+serviceAccount:
+  # -- Specifies whether a service account should be created
+  create: true
+  # -- Annotations to add to the service account
+  annotations: {}
+  # -- The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name:
+  # -- mount API token to pod directly
+  automountToken: true
 
-{{- define "vm.release" -}}
-  {{- include "vm.validate.args" . -}}
-  {{- $Release := (.helm).Release | default .Release -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $release := default $Release.Name $Values.argocdReleaseOverride -}}
-  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
-    {{- $release -}}
-  {{- else -}}
-    {{- $release | trunc 63 | trimSuffix "-" -}}
-  {{- end -}}
-{{- end -}}
+# -- See `kubectl explain poddisruptionbudget.spec` for more or check [official documentation](https://kubernetes.io/docs/tasks/run-application/configure-pdb/)
+podDisruptionBudget:
+  enabled: false
+  # minAvailable: 1
+  # maxUnavailable: 1
+  labels: {}
 
-{{- define "vm.app.name" -}}
-  {{- $_ := set . "overrideKey" "name" -}}
-  {{- $_ := set . "fallback" true -}}
-  {{- tpl (include "vm.internal.key" .) . -}}
-  {{- $_ := unset . "overrideKey" -}}
-  {{- $_ := unset . "fallback" -}}
-{{- end -}}
+# -- Generates `remoteWrite.*` flags and config maps with value content for values, that are of type list of map.
+# Each item should contain `url` param to pass validation.
+remoteWrite:
+  - url: http://debug-server.monitoring.svc.cluster.local:8080/api/v1/write
+    queue_config:
+      capacity: 1000  # Без кавычек
+      max_shards: 10
+      min_shards: 1
+      max_samples_per_send: 500
+# - url: http://vm-insert:8480/insert/0/prometheus
+#   urlRelabelConfig:
+#     - action: keep
+#       source_labels: [env]
+#       regex: "dev"
+# - url: http://prometheus:8480/insert/0/prometheus
 
-{{- define "vm.selectorLabels" -}}
-  {{- $labels := .extraLabels | default dict -}}
-  {{- $_ := set $labels "app.kubernetes.io/name" (include "vm.name" .) -}}
-  {{- $_ := set $labels "app.kubernetes.io/instance" (include "vm.release" .) -}}
-  {{- with (include "vm.app.name" .) -}}
-    {{- if eq $.style "managed" -}}
-      {{- $_ := set $labels "app.kubernetes.io/component" (printf "%s-%s" (include "vm.name" $) .) -}}
-    {{- else -}}
-      {{- $_ := set $labels "app" . -}}
-    {{- end -}}
-  {{- end -}}
-  {{- toYaml $labels -}}
-{{- end -}}
+# -- VMAgent extra command line arguments
+extraArgs:
+  envflag.enable: true
+  envflag.prefix: VM_
+  loggerFormat: json
+  httpListenAddr: ":8429"
+  # licenseFile: ""
+  # promscrape.maxScrapeSize: "167772160"
 
-{{- define "vm.port.from.flag" -}}
-  {{- $port := .default -}}
-  {{- with .flag -}}
-    {{- $port = regexReplaceAll ".*:(\\d+)" . "${1}" -}}
-  {{- end -}}
-  {{- $port -}}
-{{- end -}}
+  # Uncomment and specify the port if you want to support any of the protocols:
+  # https://docs.victoriametrics.com/vmagent#features
+  # graphiteListenAddr: ":2003"
+  # influxListenAddr: ":8189"
+  # opentsdbHTTPListenAddr: ":4242"
+  # opentsdbListenAddr: ":4242"
 
-{{- define "vm.isOpenshift" -}}
-  {{- $Capabilities := (.helm).Capabilities | default .Capabilities -}}
-  {{- if $Capabilities.APIVersions.Has "security.openshift.io/v1" -}}
-    {{- true -}}
-  {{- end -}}
-{{- end -}}
+# -- Additional environment variables (ex.: secret tokens, flags). Check [here](https://docs.victoriametrics.com/#environment-variables) for more details.
+env:
+  - name: VM_LICENSE
+    value: ""
+  # - name: VM_remoteWrite_basicAuth_password
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: auth-secret
+  #       key: password
 
-{{- define "vm.securityContext" -}}
-  {{- $securityContext := .securityContext | default dict -}}
-  {{- if not (kindIs "map" $securityContext) -}}
-    {{- $securityContext = dict -}}
-  {{- end -}}
-  {{- $securityContext = omit $securityContext "enabled" -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $adaptMode := (((($Values).global).compatibility).openshift).adaptSecurityContext | default "" -}}
-  {{- if or (eq $adaptMode "force") (and (eq $adaptMode "auto") (include "vm.isOpenshift" .)) -}}
-    {{- $securityContext = omit $securityContext "fsGroup" "runAsUser" "runAsGroup" "seLinuxOptions" -}}
-  {{- end -}}
-  {{- toYaml $securityContext -}}
-{{- end -}}
+# -- Specify alternative source for env variables
+envFrom:
+  []
+  #- configMapRef:
+  #    name: special-config
 
-{{- define "vm.probe" -}}
-  {{- $null := (fromYaml "value: null").value -}}
-  {{- $probe := dig .type (default dict) .app.probe -}}
-  {{- $probeType := "" -}}
-  {{- $defaultProbe := default dict -}}
-  {{- if ne (dig "httpGet" $null $probe) $null -}}
-    {{- $defaultProbe = dict "path" (include "vm.probe.http.path" .) "scheme" (include "vm.probe.http.scheme" .) "port" (include "vm.probe.port" .) -}}
-    {{- $probeType = "httpGet" -}}
-  {{- else if ne (dig "tcpSocket" $null $probe) $null -}}
-    {{- $defaultProbe = dict "port" (include "vm.probe.port" .) -}}
-    {{- $probeType = "tcpSocket" -}}
-  {{- end -}}
-  {{- $defaultProbe = ternary (default dict) (dict $probeType $defaultProbe) (empty $probeType) -}}
-  {{- $probe = mergeOverwrite $defaultProbe $probe -}}
-  {{- range $key, $value := $probe -}}
-    {{- if and (has (kindOf $value) (list "object" "map")) (ne $key $probeType) -}}
-      {{- $_ := unset $probe $key -}}
-    {{- end -}}
-  {{- end -}}
-  {{- tpl (toYaml $probe) . -}}
-{{- end -}}
+# -- Extra labels for Deployment and Statefulset
+extraLabels: {}
 
-{{- define "vm.probe.http.path" -}}
-  {{- index .app.extraArgs "http.pathPrefix" | default "" | trimSuffix "/" -}}/health
-{{- end -}}
+# -- Extra labels for Pods only
+podLabels: {}
 
-{{- define "vm.probe.http.scheme" -}}
-  {{- $isSecure := false -}}
-  {{- with ((.app).extraArgs).tls -}}
-    {{- $isSecure = eq (toString .) "true" -}}
-  {{- end -}}
-  {{- ternary "HTTPS" "HTTP" $isSecure -}}
-{{- end -}}
+# -- Additional hostPath mounts
+extraHostPathMounts:
+  []
+  # - name: certs-dir
+  #   mountPath: /etc/kubernetes/certs
+  #   subPath: ""
+  #   hostPath: /etc/kubernetes/certs
+  #   readOnly: true
 
-{{- define "vm.probe.port" -}}
-  {{- dig "ports" "name" "http" (.app | dict) -}}
-{{- end -}}
+# -- Extra Volumes for the pod
+extraVolumes:
+  []
+  # - name: example
+  #   configMap:
+  #     name: example
 
-{{- define "vm.arg" -}}
-  {{- if and (empty .value) (kindIs "string" .value) (ne (toString .list) "true") -}}
-    {{- .key -}}
-  {{- else if eq (toString .value) "true" -}}
-    -{{ ternary "" "-" (eq (len .key) 1) }}{{ .key }}
-  {{- else -}}
-    -{{ ternary "" "-" (eq (len .key) 1) }}{{ .key }}={{ ternary (toJson .value | squote) .value (has (kindOf .value) (list "map" "slice")) -}}
-  {{- end -}}
-{{- end -}}
+# -- Extra Volume Mounts for the container
+extraVolumeMounts:
+  []
+  # - name: example
+  #   mountPath: /example
 
-{{- define "vm.args" -}}
-  {{- $args := default list -}}
-  {{- range $key, $value := . -}}
-    {{- if not $key -}}
-      {{- fail "Empty key in command line args is not allowed" -}}
-    {{- end -}}
-    {{- if kindIs "slice" $value -}}
-      {{- range $v := $value -}}
-        {{- $args = append $args (include "vm.arg" (dict "key" $key "value" $v "list" true)) -}}
-      {{- end -}}
-    {{- else -}}
-      {{- $args = append $args (include "vm.arg" (dict "key" $key "value" $value)) -}}
-    {{- end -}}
-  {{- end -}}
-  {{- toYaml (dict "args" $args) -}}
-{{- end -}}
+# -- Extra containers to run in a pod with vmagent
+extraContainers: []
+#   - name: config-reloader
+#     image: reloader-image
 
-{{- define "vm.service" -}}
-  {{- include "vm.validate.args" . -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $nameTpl := "" -}}
-  {{- if eq .style "managed" -}}
-    {{- $nameTpl = "vm.managed.fullname" -}}
-  {{- else if eq .style "plain" -}}
-    {{- $nameTpl = "vm.plain.fullname" -}}
-  {{- else -}}
-    {{- fail ".style argument should be either `plain` or `managed`" -}}
-  {{- end -}}
-  {{- include $nameTpl . -}}
-{{- end -}}
+ # -- Init containers for vmagent
+initContainers:
+  []
+  # - name: example
+  #   image: example-image
 
-{{- define "vm.fqdn" -}}
-  {{- $name := (include "vm.service" .) -}}
-  {{- if hasKey . "appIdx" -}}
-    {{- $name = (printf "%s-%d.%s" $name .appIdx $name) -}}
-  {{- end -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $ns := (include "vm.namespace" .) -}}
-  {{- $fqdn := printf "%s.%s.svc" $name $ns -}}
-  {{- with (($Values.global).cluster).dnsDomain -}}
-    {{- $fqdn = printf "%s.%s" $fqdn . -}}
-  {{- end -}}
-  {{- $fqdn -}}
-{{- end -}}
+# -- Security context to be added to pod
+podSecurityContext:
+  enabled: true
+  # fsGroup: 2000
 
-{{- define "vm.host" -}}
-  {{- $fqdn := (include "vm.fqdn" .) -}}
-  {{- $port := 80 -}}
-  {{- $isSecure := ternary false true (empty .appSecure) -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- if .appKey -}}
-    {{- $appKey := ternary (list .appKey) .appKey (kindIs "string" .appKey) -}}
-    {{- $values := $Values -}}
-    {{- $ctx := . -}}
-    {{- range $ak := $appKey -}}
-      {{- $values = ternary (default dict) (index $values $ak | default dict) (empty $values) -}}
-      {{- $ctx = ternary (default dict) (index $ctx $ak | default dict) (empty $ctx) -}}
-    {{- end -}}
-    {{- $spec := default dict -}}
-    {{- if $ctx -}}
-      {{- $spec = $ctx -}}
-    {{- else if $values -}}
-      {{- $spec = $values -}}
-    {{- end -}}
-    {{- with ($spec.extraArgs).tls -}}
-      {{- $isSecure = eq (toString .) "true" -}}
-    {{- end -}}
-    {{- $port = (ternary 443 80 $isSecure) -}}
-    {{- $port = $spec.port | default ($spec.service).servicePort | default ($spec.service).port | default $port -}}
-    {{- if hasKey . "appIdx" -}}
-      {{- $port = (include "vm.port.from.flag" (dict "flag" ($spec.extraArgs).httpListenAddr "default" $port)) -}}
-    {{- end -}}
-  {{- end -}}
-  {{- $fqdn }}:{{ $port -}}
-{{- end -}}
+# -- Security context to be added to pod's containers
+securityContext:
+  enabled: true
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
 
-{{- define "vm.url" -}}
-  {{- $host := (include "vm.host" .) -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $proto := "http" -}}
-  {{- $path := .appRoute | default "/" -}}
-  {{- $isSecure := ternary false true (empty .appSecure) -}}
-  {{- if .appKey -}}
-    {{- $appKey := ternary (list .appKey) .appKey (kindIs "string" .appKey) -}}
-    {{- $values := $Values -}}
-    {{- $ctx := . -}}
-    {{- range $ak := $appKey -}}
-      {{- $values = ternary (default dict) (index $values $ak | default dict) (empty $values) -}}
-      {{- $ctx = ternary (default dict) (index $ctx $ak | default dict) (empty $ctx) -}}
-    {{- end -}}
-    {{- $spec := default dict -}}
-    {{- if $values -}}
-      {{- $spec = $values -}}
-    {{- else if $ctx -}}
-      {{- $spec = $ctx -}}
-    {{- end -}}
-    {{- with ($spec.extraArgs).tls -}}
-      {{- $isSecure = eq (toString .) "true" -}}
-    {{- end -}}
-    {{- $proto = (ternary "https" "http" $isSecure) -}}
-    {{- $path = dig "http.pathPrefix" $path ($spec.extraArgs | default dict) -}}
-  {{- end -}}
-  {{- printf "%s://%s%s" $proto $host (trimSuffix "/" $path) -}}
-{{- end -}}
+service:
+  # -- Enable agent service
+  enabled: false
+  # -- Service annotations
+  annotations: {}
+  # -- Service labels
+  extraLabels: {}
+  # -- Service ClusterIP
+  clusterIP: ""
+  # -- Service external IPs. Check [here](https://kubernetes.io/docs/user-guide/services/#external-ips) for details
+  externalIPs: []
+  # -- Service load balancer IP
+  loadBalancerIP: ""
+  # -- Load balancer source range
+  loadBalancerSourceRanges: []
+  # -- Service port
+  servicePort: 8429
+  # -- Target port
+  targetPort: http
+  # nodePort: 30000
+  # -- Service type
+  type: ClusterIP
+  # -- Service IP family policy. Check [here](https://kubernetes.io/docs/concepts/services-networking/dual-stack/#services) for details.
+  ipFamilyPolicy: ""
+  # -- List of service IP families. Check [here](https://kubernetes.io/docs/concepts/services-networking/dual-stack/#services) for details.
+  ipFamilies: []
+  # -- Service external traffic policy. Check [here](https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip) for details
+  externalTrafficPolicy: ""
+  # -- Health check node port for a service. Check [here](https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip) for details
+  healthCheckNodePort: ""
 
-{{- define "vm.ingress.port" -}}
-  {{- $port := dict "name" "http" -}}
-  {{- with .port -}}
-    {{- $numberTypes := list "int" "float64" -}}
-    {{- $port = dict (ternary "number" "name" (has (kindOf .) $numberTypes)) . -}}
-  {{- end -}}
-  {{- toYaml $port -}}
-{{- end -}}
+ingress:
+  # -- Enable deployment of ingress for agent
+  enabled: false
+  
+  # -- Ingress annotations
+  annotations: {}
+  #   kubernetes.io/ingress.class: nginx
+  #   kubernetes.io/tls-acme: 'true'
 
-{{- define "vm.license.secret.key" -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $plain := (($Values.license).secret).key | default ((($Values.global).license).secret).key | default "" -}}
-  {{- $managed := (($Values.license).keyRef).key | default ((($Values.global).license).keyRef).key | default "" -}}
-  {{- $plain | default $managed -}}
-{{- end -}}
+  # -- Ingress extra labels
+  extraLabels: {}
+  
+  # -- Array of host objects
+  hosts:
+    - name: vmagent.local
+      path:
+        - / 
+      port: http
+  
+  # -- Array of TLS objects
+  tls: []
+  #   - secretName: vmagent-ingress-tls
+  #     hosts:
+  #       - vmagent.local
 
-{{- define "vm.license.secret.name" -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- $plain := (($Values.license).secret).name | default ((($Values.global).license).secret).name | default "" -}}
-  {{- $managed := (($Values.license).keyRef).name | default ((($Values.global).license).keyRef).name | default "" -}}
-  {{- $plain | default $managed -}}
-{{- end -}}
+  # -- Ingress controller class name
+  ingressClassName: ""
 
-{{- define "vm.license.key" -}}
-  {{- $Values := (.helm).Values | default .Values -}}
-  {{- ($Values.license).key | default (($Values.global).license).key | default "" -}}
-{{- end -}}
+  # -- Ingress path type
+  pathType: Prefix
 
-{{- define "vm.enterprise.disabled" -}}
-  {{- $licenseKey := (include "vm.license.key" .) -}}
-  {{- $licenseSecretKey := (include "vm.license.secret.key" .) -}}
-  {{- $licenseSecretName := (include "vm.license.secret.name" .) -}}
-  {{- or .noEnterprise (and (or (empty $licenseKey) (eq $licenseKey "")) (or (empty $licenseSecretName) (eq $licenseSecretName "")) (or (empty $licenseSecretKey) (eq $licenseSecretKey ""))) -}}
-{{- end -}}
+# -- Resource object. Details are [here](http://kubernetes.io/docs/user-guide/compute-resources/)
+resources:
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+  requests:
+    cpu: "200m"
+    memory: "256Mi"
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
 
-{{- define "vm.enterprise.only" -}}
-  {{- if eq (include "vm.enterprise.disabled" .) "true" -}}
-    {{- fail `Pass valid license at .Values.license or .Values.global.license if you have an enterprise license for running this software.
-       See https://victoriametrics.com/legal/esa/ for details.
-       Documentation - https://docs.victoriametrics.com/enterprise
-       for more information, visit https://victoriametrics.com/products/enterprise/
-       To request a trial license, go to https://victoriametrics.com/products/enterprise/trial/` -}}
-  {{- end -}}
-{{- end -}}
+# -- Annotations to be added to the deployment
+annotations: {}
 
-{{- define "vm.license.volume" -}}
-  {{- $licenseSecretKey := (include "vm.license.secret.key" .) -}}
-  {{- $licenseSecretName := (include "vm.license.secret.name" .) -}}
-  {{- if and $licenseSecretName $licenseSecretKey (ne $licenseSecretName "") (ne $licenseSecretKey "") -}}
-- name: license-key
-  secret:
-    secretName: {{ $licenseSecretName }}
-  {{- end -}}
-{{- end -}}
+# -- Annotations to be added to pod
+podAnnotations: {}
 
-{{- define "vm.license.mount" -}}
-  {{- $licenseSecretKey := (include "vm.license.secret.key" .) -}}
-  {{- $licenseSecretName := (include "vm.license.secret.name" .) -}}
-  {{- if and $licenseSecretName $licenseSecretKey (ne $licenseSecretName "") (ne $licenseSecretKey "") -}}
-- name: license-key
-  mountPath: /etc/vm-license-key
-  readOnly: true
-  {{- end -}}
-{{- end -}}
+# -- Pod's node selector. Details are [here](https://kubernetes.io/docs/user-guide/node-selection/)
+nodeSelector: {}
 
-{{- define "vm.license.flag" -}}
-  {{- $licenseKey := (include "vm.license.key" .) -}}
-  {{- $licenseSecretKey := (include "vm.license.secret.key" .) -}}
-  {{- $licenseSecretName := (include "vm.license.secret.name" .) -}}
-  {{- if and $licenseKey (ne $licenseKey "") -}}
-license: {{ $licenseKey }}
-  {{- else if and $licenseSecretName $licenseSecretKey (ne $licenseSecretName "") (ne $licenseSecretKey "") -}}
-licenseFile: /etc/vm-license-key/{{ $licenseSecretKey }}
-  {{- end -}}
-{{- end -}}
+# -- Node tolerations for server scheduling to nodes with taints. Details are [here](https://kubernetes.io/docs/concepts/configuration/assign-pod-node/)
+tolerations: []
+
+# -- Pod topologySpreadConstraints
+topologySpreadConstraints: []
+  # - maxSkew: 1
+  #   topologyKey: topology.kubernetes.io/zone
+  #   whenUnsatisfiable: DoNotSchedule
+
+# -- Pod affinity
+affinity: {}
+
+# -- VMAgent [scraping configuration](https://docs.victoriametrics.com/vmagent#how-to-collect-metrics-in-prometheus-format)
+# use existing configmap if specified
+# otherwise .config values will be used
+configMap: ""
+
+# -- Priority class to be assigned to the pod(s)
+priorityClassName: ""
+
+serviceMonitor:
+  # -- Enable deployment of Service Monitor for server component. This is Prometheus operator object
+  enabled: false
+  # -- Service Monitor labels
+  extraLabels: {}
+  # -- Service Monitor annotations
+  annotations: {}
+  # -- Service Monitor relabelings
+  relabelings: []
+  # -- Basic auth params for Service Monitor
+  basicAuth: {}
+  # -- Service Monitor metricRelabelings
+  metricRelabelings: []
+  # -- Service Monitor targetPort
+  targetPort: http
+  # interval: 15s
+  # scrapeTimeout: 5s
+  # -- Commented. HTTP scheme to use for scraping.
+  # scheme: https
+  # -- Commented. TLS configuration to use when scraping the endpoint
+  # tlsConfig:
+  #   insecureSkipVerify: true
+
+# -- Empty dir configuration for a case, when persistence is disabled
+# emptyDir: {}
+
+emptyDir:
+  sizeLimit: 1Gi
+
+
+persistentVolume:
+  # -- Create/use Persistent Volume Claim for server component. Empty dir if false
+  enabled: false
+
+  # -- StorageClass to use for persistent volume. Requires server.persistentVolume.enabled: true. If defined, PVC created automatically
+  storageClassName: ""
+
+  # -- Array of access modes. Must match those of existing PV or dynamic provisioner. Details are [here](http://kubernetes.io/docs/user-guide/persistent-volumes/)
+  accessModes:
+    - ReadWriteOnce
+
+  # -- Size of the volume. Should be calculated based on the logs you send and retention policy you set.
+  size: 10Gi
+
+  # -- Persistent volume annotations
+  annotations: {}
+
+  # -- Persistent volume additional labels
+  extraLabels: {}
+
+  # -- Existing Claim name. If defined, PVC must be created manually before volume will be bound
+  existingClaim: ""
+
+  # -- Bind Persistent Volume by labels. Must match all labels of targeted PV.
+  matchLabels: {}
+
+# -- Horizontal Pod Autoscaling.
+# Note that it is not intended to be used for vmagents which perform scraping.
+# In order to scale scraping vmagents check [here](https://docs.victoriametrics.com/vmagent/#scraping-big-number-of-targets)
+horizontalPodAutoscaling:
+  # -- Use HPA for vmagent
+  enabled: false
+  # -- Maximum replicas for HPA to use to to scale vmagent
+  maxReplicas: 10
+  # -- Minimum replicas for HPA to use to scale vmagent
+  minReplicas: 1
+  # -- Metric for HPA to use to scale vmagent
+  metrics: []
+
+# -- VMAgent scrape configuration
+config:
+  global:
+    scrape_interval: 10s
+
+  scrape_configs:
+    - job_name: vmagent
+      static_configs:
+        - targets: ["localhost:8429"]
+
+      ## COPY from Prometheus helm chart https://github.com/helm/charts/blob/master/stable/prometheus/values.yaml
+
+      # Scrape config for API servers.
+      #
+      # Kubernetes exposes API servers as endpoints to the default/kubernetes
+      # service so this uses `endpoints` role and uses relabelling to only keep
+      # the endpoints associated with the default/kubernetes service using the
+      # default named port `https`. This works for single API server deployments as
+      # well as HA API server deployments.
+    - job_name: "kubernetes-apiservers"
+      kubernetes_sd_configs:
+        - role: endpoints
+      # Default to scraping over https. If required, just disable this or change to
+      # `http`.
+      scheme: https
+      # This TLS & bearer token file config is used to connect to the actual scrape
+      # endpoints for cluster components. This is separate to discovery auth
+      # configuration because discovery & scraping are two separate concerns in
+      # Prometheus. The discovery auth config is automatic if Prometheus runs inside
+      # the cluster. Otherwise, more config options have to be provided within the
+      # <kubernetes_sd_config>.
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        # If your node certificates are self-signed or use a different CA to the
+        # master CA, then you need to disable certificate verification. Note that
+        # certificate verification is an integral part of a secure infrastructure
+        # so this should only be disabled in a controlled environment. You can
+        # enable certificate verification by commenting the line below.
+        #
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      # Keep only the default/kubernetes service endpoints for the https port. This
+      # will add targets for each API server which Kubernetes adds an endpoint to
+      # the default/kubernetes service.
+      relabel_configs:
+        - source_labels:
+            [
+              __meta_kubernetes_namespace,
+              __meta_kubernetes_service_name,
+              __meta_kubernetes_endpoint_port_name,
+            ]
+          action: keep
+          regex: default;kubernetes;https
+    - job_name: "kubernetes-nodes"
+      # Default to scraping over https. If required, just disable this or change to
+      # `http`.
+      scheme: https
+      # This TLS & bearer token file config is used to connect to the actual scrape
+      # endpoints for cluster components. This is separate to discovery auth
+      # configuration because discovery & scraping are two separate concerns in
+      # Prometheus. The discovery auth config is automatic if Prometheus runs inside
+      # the cluster. Otherwise, more config options have to be provided within the
+      # <kubernetes_sd_config>.
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        # If your node certificates are self-signed or use a different CA to the
+        # master CA, then you need to disable certificate verification. Note that
+        # certificate verification is an integral part of a secure infrastructure
+        # so this should only be disabled in a controlled environment. You can
+        # enable certificate verification by commenting the line below.
+        #
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+        - role: node
+      relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/$1/proxy/metrics
+    - job_name: "kubernetes-nodes-cadvisor"
+      # Default to scraping over https. If required, just disable this or change to
+      # `http`.
+      scheme: https
+      # This TLS & bearer token file config is used to connect to the actual scrape
+      # endpoints for cluster components. This is separate to discovery auth
+      # configuration because discovery & scraping are two separate concerns in
+      # Prometheus. The discovery auth config is automatic if Prometheus runs inside
+      # the cluster. Otherwise, more config options have to be provided within the
+      # <kubernetes_sd_config>.
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        # If your node certificates are self-signed or use a different CA to the
+        # master CA, then you need to disable certificate verification. Note that
+        # certificate verification is an integral part of a secure infrastructure
+        # so this should only be disabled in a controlled environment. You can
+        # enable certificate verification by commenting the line below.
+        #
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+        - role: node
+      # This configuration will work only on kubelet 1.7.3+
+      # As the scrape endpoints for cAdvisor have changed
+      # if you are using older version you need to change the replacement to
+      # replacement: /api/v1/nodes/$1:4194/proxy/metrics
+      # more info here https://github.com/coreos/prometheus-operator/issues/633
+      relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+      # ignore timestamps of cadvisor's metrics by default
+      # more info here https://github.com/VictoriaMetrics/VictoriaMetrics/issues/4697#issuecomment-1656540535
+      honor_timestamps: false
+    # Scrape config for service endpoints.
+    #
+    # The relabeling allows the actual service scrape endpoint to be configured
+    # via the following annotations:
+    #
+    # * `prometheus.io/scrape`: Only scrape services that have a value of `true`
+    # * `prometheus.io/scheme`: If the metrics endpoint is secured then you will need
+    # to set this to `https` & most likely set the `tls_config` of the scrape config.
+    # * `prometheus.io/path`: If the metrics path is not `/metrics` override this.
+    # * `prometheus.io/port`: If the metrics are exposed on a different port to the
+    # service then set this appropriately.
+    # 
+    - job_name: "kubernetes-service-endpoints"
+      kubernetes_sd_configs:
+        - role: endpointslices
+      relabel_configs:
+        - action: drop
+          source_labels: [__meta_kubernetes_pod_container_init]
+          regex: true
+        - action: keep_if_equal
+          source_labels: [__meta_kubernetes_service_annotation_prometheus_io_port, __meta_kubernetes_pod_container_port_number]
+        - source_labels:
+            [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - source_labels:
+            [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+          action: replace
+          target_label: __scheme__
+          regex: (https?)
+        - source_labels:
+            [__meta_kubernetes_service_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels:
+            [
+              __address__,
+              __meta_kubernetes_service_annotation_prometheus_io_port,
+            ]
+          action: replace
+          target_label: __address__
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+        - action: labelmap
+          regex: __meta_kubernetes_service_label_(.+)
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
+        - source_labels: [__meta_kubernetes_pod_container_name]
+          target_label: container
+        - source_labels: [__meta_kubernetes_namespace]
+          target_label: namespace
+        - source_labels: [__meta_kubernetes_service_name]
+          target_label: service
+        - source_labels: [__meta_kubernetes_service_name]
+          target_label: job
+          replacement: ${1}
+        - source_labels: [__meta_kubernetes_pod_node_name]
+          action: replace
+          target_label: node
+    # Scrape config for slow service endpoints; same as above, but with a larger
+    # timeout and a larger interval
+    #
+    # The relabeling allows the actual service scrape endpoint to be configured
+    # via the following annotations:
+    #
+    # * `prometheus.io/scrape-slow`: Only scrape services that have a value of `true`
+    # * `prometheus.io/scheme`: If the metrics endpoint is secured then you will need
+    # to set this to `https` & most likely set the `tls_config` of the scrape config.
+    # * `prometheus.io/path`: If the metrics path is not `/metrics` override this.
+    # * `prometheus.io/port`: If the metrics are exposed on a different port to the
+    # service then set this appropriately.
+    #
+    - job_name: "kubernetes-service-endpoints-slow"
+      scrape_interval: 5m
+      scrape_timeout: 30s
+      kubernetes_sd_configs:
+        - role: endpointslices
+      relabel_configs:
+        - action: drop
+          source_labels: [__meta_kubernetes_pod_container_init]
+          regex: true
+        - action: keep_if_equal
+          source_labels: [__meta_kubernetes_service_annotation_prometheus_io_port, __meta_kubernetes_pod_container_port_number]
+        - source_labels:
+            [__meta_kubernetes_service_annotation_prometheus_io_scrape_slow]
+          action: keep
+          regex: true
+        - source_labels:
+            [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+          action: replace
+          target_label: __scheme__
+          regex: (https?)
+        - source_labels:
+            [__meta_kubernetes_service_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels:
+            [
+              __address__,
+              __meta_kubernetes_service_annotation_prometheus_io_port,
+            ]
+          action: replace
+          target_label: __address__
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+        - action: labelmap
+          regex: __meta_kubernetes_service_label_(.+)
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
+        - source_labels: [__meta_kubernetes_pod_container_name]
+          target_label: container
+        - source_labels: [__meta_kubernetes_namespace]
+          target_label: namespace
+        - source_labels: [__meta_kubernetes_service_name]
+          target_label: service
+        - source_labels: [__meta_kubernetes_service_name]
+          target_label: job
+          replacement: ${1}
+        - source_labels: [__meta_kubernetes_pod_node_name]
+          action: replace
+          target_label: node
+    # Example scrape config for probing services via the Blackbox Exporter.
+    #
+    # The relabeling allows the actual service scrape endpoint to be configured
+    # via the following annotations:
+    #
+    # * `prometheus.io/probe`: Only probe services that have a value of `true`
+    #
+    - job_name: "kubernetes-services"
+      metrics_path: /probe
+      params:
+        module: [http_2xx]
+      kubernetes_sd_configs:
+        - role: service
+      relabel_configs:
+        - source_labels:
+            [__meta_kubernetes_service_annotation_prometheus_io_probe]
+          action: keep
+          regex: true
+        - source_labels: [__address__]
+          target_label: __param_target
+        - target_label: __address__
+          replacement: blackbox
+        - source_labels: [__param_target]
+          target_label: instance
+        - action: labelmap
+          regex: __meta_kubernetes_service_label_(.+)
+        - source_labels: [__meta_kubernetes_namespace]
+          target_label: namespace
+        - source_labels: [__meta_kubernetes_service_name]
+          target_label: service
+    # Example scrape config for pods
+    #
+    # The relabeling allows the actual pod scrape endpoint to be configured via the
+    # following annotations:
+    #
+    # * `prometheus.io/scrape`: Only scrape pods that have a value of `true`
+    # * `prometheus.io/path`: If the metrics path is not `/metrics` override this.
+    # * `prometheus.io/port`: Scrape the pod on the indicated port instead of the default of `9102`.
+    #
+    - job_name: "kubernetes-pods"
+      kubernetes_sd_configs:
+        - role: pod
+      relabel_configs:
+        - action: drop
+          source_labels: [__meta_kubernetes_pod_container_init]
+          regex: true
+        - action: keep_if_equal
+          source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port, __meta_kubernetes_pod_container_port_number]
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels:
+            [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+          target_label: __address__
+        - action: labelmap
+          regex: __meta_kubernetes_pod_label_(.+)
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
+        - source_labels: [__meta_kubernetes_pod_container_name]
+          target_label: container
+        - source_labels: [__meta_kubernetes_namespace]
+          target_label: namespace
+        - source_labels: [__meta_kubernetes_pod_node_name]
+          action: replace
+          target_label: node
+      ## End of COPY
+
+# -- Extra scrape configs that will be appended to `config`
+extraScrapeConfigs: []
+
+probe:
+  # -- Readiness probe
+  readiness:
+    httpGet: {}
+    initialDelaySeconds: 5
+    periodSeconds: 15
+  # -- Liveness probe
+  liveness:
+    tcpSocket: {}
+    initialDelaySeconds: 5
+    periodSeconds: 15
+    timeoutSeconds: 5
+  # -- Startup probe
+  startup: {}
+
+# -- Add extra specs dynamically to this chart
+# extraObjects: []
+
+extraObjects:
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: debug-server
+      namespace: monitoring
+      labels:
+        app: debug-server
+    spec:
+      containers:
+      - name: debug-server
+        image: nexus.fc.uralsibbank.ru/dockerhub/python:3.9-slim
+        command: ["python", "-u", "-c", "import http.server, socketserver\nPORT = 8080\nclass Handler(http.server.SimpleHTTPRequestHandler):\n    def do_POST(self):\n        content_length = int(self.headers['Content-Length'])\n        post_data = self.rfile.read(content_length)\n        with open('/mnt/metrics.log', 'ab') as f:\n            f.write(post_data)\n        self.send_response(200)\n        self.end_headers()\nwith socketserver.TCPServer(('', PORT), Handler) as httpd:\n    print(f'Serving at port {PORT}')\n    httpd.serve_forever()"]
+        volumeMounts:
+        - name: metrics-storage
+          mountPath: /mnt
+        resources:
+          limits:
+            cpu: "100m"
+            memory: "128Mi"
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+      volumes:
+      - name: metrics-storage
+        emptyDir:
+          sizeLimit: 500Mi
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: debug-server
+      namespace: monitoring
+    spec:
+      selector:
+        app: debug-server
+      ports:
+      - port: 8080
+        targetPort: 8080
+
+
+
+allowedMetricsEndpoints:
+  - /metrics
+
+
+# -- Enterprise license key configuration for VictoriaMetrics enterprise.
+# Required only for VictoriaMetrics enterprise. Check docs [here](https://docs.victoriametrics.com/enterprise),
+# for more information, visit [site](https://victoriametrics.com/products/enterprise/).
+# Request a trial license [here](https://victoriametrics.com/products/enterprise/trial/)
+# Supported starting from VictoriaMetrics v1.94.0
+license:
+  # -- License key
+  key: ""
+
+  # -- Use existing secret with license key
+  secret: null

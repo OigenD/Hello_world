@@ -1,0 +1,598 @@
+{{- define "vmagent.args" -}}
+  {{- $args := default dict -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- if empty $Values.remoteWrite -}}
+    {{- fail "Please define at least one remoteWrite" -}}
+  {{- end -}}
+  {{- $_ := set $args "promscrape.config" "/config/scrape/scrape.yml" -}}
+  {{- $_ := set $args "remoteWrite.tmpDataPath" "/tmpData" -}}
+  {{- range $i, $rw := $Values.remoteWrite -}}
+    {{- if not $rw.url -}}
+      {{- fail (printf "`url` is not set for `remoteWrite` idx %d" $i) -}}
+    {{- end -}}
+    {{- range $rwKey, $rwValue := $rw -}}
+      {{- $key := printf "remoteWrite.%s" $rwKey -}}
+      {{- $param := index $args $key | default list -}}
+      {{- if or (kindIs "slice" $rwValue) (kindIs "map" $rwValue) -}}
+        {{- $param = append $param (printf "/config/rw/%d-%s.yaml" $i $rwKey) -}}
+      {{- else -}}
+        {{- $param = append $param $rwValue -}}
+      {{- end -}}
+      {{- $_ := set $args $key $param -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $args = mergeOverwrite $args (fromYaml (include "vm.license.flag" .)) -}}
+  {{- $args = mergeOverwrite $args $Values.extraArgs -}}
+  {{- if and (eq $Values.mode "statefulSet") $Values.statefulSet.clusterMode -}}
+    {{- $_ := set $args "promscrape.cluster.membersCount" $Values.replicaCount -}}
+    {{- $_ := set $args "promscrape.cluster.replicationFactor" $Values.statefulSet.replicationFactor -}}
+    {{- $_ := set $args "promscrape.cluster.memberNum" "$(POD_NAME)" -}}
+  {{- end -}}
+  {{- toYaml (fromYaml (include "vm.args" $args)).args -}}
+{{- end -}}
+
+{{- define "vmagent.rw.config" -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $rwcm := default dict -}}
+  {{- range $i, $rw := $Values.remoteWrite -}}
+    {{- range $rwKey, $rwValue := $rw -}}
+      {{- if or (kindIs "slice" $rwValue) (kindIs "map" $rwValue) -}}
+        {{- $_ := set $rwcm (printf "%d-%s.yaml" $i $rwKey) (toYaml $rwValue) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+  {{- toYaml $rwcm -}}
+{{- end -}}
+
+{{- define "vmagent.scrape.config.name" -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $fullname := include "vm.plain.fullname" . -}}
+  {{- $Values.configMap | default (printf "%s-config" $fullname) -}}
+{{- end -}}
+
+{{- define "vm.namespace" -}}
+  {{- include "vm.validate.args" . -}}
+  {{- $Release := (.helm).Release | default .Release -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $Values.namespaceOverride | default ($Values.global).namespaceOverride | default $Release.Namespace -}}
+{{- end -}}
+
+{{- define "vm.validate.args" -}}
+  {{- $Chart := (.helm).Chart | default .Chart -}}
+  {{- $Capabilities := (.helm).Capabilities | default .Capabilities -}}
+  {{- if semverCompare "<3.14.0" $Capabilities.HelmVersion.Version -}}
+    {{- fail "This chart requires helm version 3.14.0 or higher" -}}
+  {{- end -}}
+  {{- if empty $Chart -}}
+    {{- fail "invalid template data" -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.name" -}}
+  {{- include "vm.validate.args" . -}}
+  {{- $Chart := (.helm).Chart | default .Chart -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $nameOverride := $Values.nameOverride | default ($Values.global).nameOverride | default $Chart.Name -}}
+  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
+    {{- $nameOverride -}}
+  {{- else -}}
+    {{- $nameOverride | trunc 63 | trimSuffix "-" -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.fullname" -}}
+  {{- include "vm.validate.args" . -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $Chart := (.helm).Chart | default .Chart -}}
+  {{- $Release := (.helm).Release | default .Release -}}
+  {{- $fullname := "" -}}
+  {{- if $Values.fullnameOverride -}}
+    {{- $fullname = $Values.fullnameOverride -}}
+  {{- else if ($Values.global).fullnameOverride -}}
+    {{- $fullname = $Values.global.fullnameOverride -}}
+  {{- else -}}
+    {{- $name := default $Chart.Name $Values.nameOverride -}}
+    {{- if contains $name $Release.Name -}}
+      {{- $fullname = $Release.Name -}}
+    {{- else -}}
+      {{- $fullname = (printf "%s-%s" $Release.Name $name) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $fullname = tpl $fullname . -}}
+  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
+    {{- $fullname -}}
+  {{- else -}}
+    {{- $fullname | trunc 63 | trimSuffix "-" -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.cr.fullname" -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $_ := set . "overrideKey" "name" -}}
+  {{- $fullname := include "vm.internal.key" . -}}
+  {{- $_ := unset . "overrideKey" -}}
+  {{- if empty $fullname -}}
+    {{- $fullname = include "vm.fullname" . -}}
+  {{- end -}}
+  {{- $fullname = tpl $fullname . -}}
+  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
+    {{- $fullname -}}
+  {{- else -}}
+    {{- $fullname | trunc 63 | trimSuffix "-" -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.managed.fullname" -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $_ := set . "overrideKey" "name" -}}
+  {{- $fullname := include "vm.internal.key" . -}}
+  {{- $_ := unset . "overrideKey" -}}
+  {{- if empty $fullname -}}
+    {{- $fullname = include "vm.fullname" . -}}
+  {{- end -}}
+  {{- with include "vm.internal.key.default" . -}}
+    {{- $prefix := ternary . (printf "vm%s" .) (or (hasPrefix "vm" .) (hasPrefix "vl" .)) -}}
+    {{- $fullname = printf "%s-%s" $prefix $fullname -}}
+  {{- end -}}
+  {{- $fullname = tpl $fullname . -}}
+  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
+    {{- $fullname -}}
+  {{- else -}}
+    {{- $fullname | trunc 63 | trimSuffix "-" -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.plain.fullname" -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $_ := set . "overrideKey" "fullnameOverride" -}}
+  {{- $fullname := include "vm.internal.key" . -}}
+  {{- $_ := unset . "overrideKey" -}}
+  {{- if empty $fullname -}}
+    {{- $fullname = include "vm.fullname" . -}}
+    {{- with include "vm.internal.key.default" . -}}
+      {{- $fullname = printf "%s-%s" $fullname . -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $fullname = tpl $fullname . -}}
+  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
+    {{- $fullname -}}
+  {{- else -}}
+    {{- $fullname | trunc 63 | trimSuffix "-" -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.internal.key" -}}
+  {{- include "vm.validate.args" . -}}
+  {{- $overrideKey := .overrideKey | default "fullnameOverride" -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $key := "" -}}
+  {{- if .appKey -}}
+    {{- $appKey := ternary (list .appKey) .appKey (kindIs "string" .appKey) -}}
+    {{- $ctx := . -}}
+    {{- $values := $Values -}}
+    {{- range $ak := $appKey -}}
+      {{- $values = ternary (default dict) (index $values $ak | default dict) (empty $values) -}}
+      {{- $ctx = ternary (default dict) (index $ctx $ak | default dict) (empty $ctx) -}}
+      {{- if and (empty $values) (empty $ctx) -}}
+        {{- fail (printf "No data for appKey %s" (join "->" $appKey)) -}}
+      {{- end -}}
+      {{- if and (kindIs "map" $values) (index $values $overrideKey) -}}
+        {{- $key = index $values $overrideKey -}}
+      {{- else if and (kindIs "map" $ctx) (index $ctx $overrideKey) -}}
+        {{- $key = index $ctx $overrideKey -}}
+      {{- end -}}
+    {{- end -}}
+    {{- if and (empty $key) .fallback -}}
+      {{- $key = include "vm.internal.key.default" . -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $key -}}
+{{- end -}}
+
+{{- define "vm.internal.key.default" -}}
+  {{- with .appKey -}}
+    {{- $key := ternary (list .) . (kindIs "string" .) -}}
+    {{- last (without $key "spec") -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.chart" -}}
+  {{- include "vm.validate.args" . -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $Chart := (.helm).Chart | default .Chart -}}
+  {{- $chart := printf "%s-%s" $Chart.Name $Chart.Version | replace "+" "_" -}}
+  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
+    {{- $chart -}}
+  {{- else -}}
+    {{- $chart | trunc 63 | trimSuffix "-" -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.sa.name" -}}
+  {{- include "vm.validate.args" . -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- if $Values.serviceAccount.create -}}
+    {{- default (include "vm.fullname" .) $Values.serviceAccount.name -}}
+  {{- else -}}
+    {{- default "default" $Values.serviceAccount.name -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.metaLabels" -}}
+  {{- include "vm.validate.args" . -}}
+  {{- $Release := (.helm).Release | default .Release -}}
+  {{- $labels := .extraLabels | default dict -}}
+  {{- $_ := set $labels "helm.sh/chart" (include "vm.chart" .) -}}
+  {{- $_ := set $labels "app.kubernetes.io/managed-by" $Release.Service -}}
+  {{- toYaml $labels -}}
+{{- end -}}
+
+{{- define "vm.podLabels" -}}
+  {{- include "vm.validate.args" . -}}
+  {{- $Release := (.helm).Release | default .Release -}}
+  {{- $labels := fromYaml (include "vm.selectorLabels" .) -}}
+  {{- $labels = mergeOverwrite $labels (.extraLabels | default dict) -}}
+  {{- $_ := set $labels "app.kubernetes.io/managed-by" $Release.Service -}}
+  {{- toYaml $labels -}}
+{{- end -}}
+
+{{- define "vm.labels" -}}
+  {{- include "vm.validate.args" . -}}
+  {{- $labels := fromYaml (include "vm.selectorLabels" .) -}}
+  {{- $labels = mergeOverwrite $labels (fromYaml (include "vm.metaLabels" .)) -}}
+  {{- with (include "vm.image.tag" .) -}}
+    {{- $_ := set $labels "app.kubernetes.io/version" (regexReplaceAll "(.*)(@sha.*)" . "${1}") -}}
+  {{- end -}}
+  {{- toYaml $labels -}}
+{{- end -}}
+
+{{- define "vm.image" -}}
+  {{- $image := (fromYaml (include "vm.internal.image" .)).image | default dict -}}
+  {{- $tag := include "vm.image.tag" . -}}
+  {{- if empty $image.repository -}}
+    {{- fail "cannot create image without `.repository` defined" -}}
+  {{- end -}}
+  {{- $result := tpl (printf "%s:%s" $image.repository $tag) . -}}
+  {{- with $image.registry | default "" -}}
+    {{- $result = (printf "%s/%s" . $result) -}}
+  {{- end -}}
+  {{- $result -}}
+{{- end -}}
+
+{{- define "vm.image.tag" -}}
+  {{- $Chart := (.helm).Chart | default .Chart -}}
+  {{- $image := (fromYaml (include "vm.internal.image" .)).image | default dict -}}
+  {{- $tag := $image.tag -}}
+  {{- if empty $tag -}}
+    {{- $tag = $Chart.AppVersion -}}
+    {{- $variant := $image.variant -}}
+    {{- if eq (include "vm.enterprise.disabled" .) "false" -}}
+      {{- if $variant -}}
+        {{- $variant = printf "enterprise-%s" $variant -}}
+      {{- else -}}
+        {{- $variant = "enterprise" -}}
+      {{- end -}}
+    {{- end -}}
+    {{- with $variant -}}
+      {{- $tag = (printf "%s-%s" $tag .) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $tag -}}
+{{- end -}}
+
+{{- define "vm.internal.image" -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $values := $Values -}}
+  {{- $ctx := . -}}
+  {{- with .appKey -}}
+    {{- $appKey := ternary (list .) . (kindIs "string" .) -}}
+    {{- range $ak := $appKey -}}
+      {{- $values = ternary (default dict) (index $values $ak | default dict) (empty $values) -}}
+      {{- $ctx = ternary (default dict) (index $ctx $ak | default dict) (empty $ctx) -}}
+      {{- if and (empty $values) (empty $ctx) -}}
+        {{- fail (printf "No data for appKey %s" (join "->" $appKey)) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $image := ternary $ctx.image $values.image (hasKey $ctx "image") -}}
+  {{- if not $image.registry -}}
+    {{- if (($Values.global).image).registry -}}
+      {{- $_ := set $image "registry" (($Values.global).image).registry -}}
+    {{- else if hasKey $image "registry" -}}
+      {{- $_ := unset $image "registry" -}}
+    {{- end -}}
+  {{- end -}}
+  {{- toYaml (dict "image" $image) -}}
+{{- end -}}
+
+{{- define "vm.release" -}}
+  {{- include "vm.validate.args" . -}}
+  {{- $Release := (.helm).Release | default .Release -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $release := default $Release.Name $Values.argocdReleaseOverride -}}
+  {{- if or ($Values.global).disableNameTruncation $Values.disableNameTruncation -}}
+    {{- $release -}}
+  {{- else -}}
+    {{- $release | trunc 63 | trimSuffix "-" -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.app.name" -}}
+  {{- $_ := set . "overrideKey" "name" -}}
+  {{- $_ := set . "fallback" true -}}
+  {{- tpl (include "vm.internal.key" .) . -}}
+  {{- $_ := unset . "overrideKey" -}}
+  {{- $_ := unset . "fallback" -}}
+{{- end -}}
+
+{{- define "vm.selectorLabels" -}}
+  {{- $labels := .extraLabels | default dict -}}
+  {{- $_ := set $labels "app.kubernetes.io/name" (include "vm.name" .) -}}
+  {{- $_ := set $labels "app.kubernetes.io/instance" (include "vm.release" .) -}}
+  {{- with (include "vm.app.name" .) -}}
+    {{- if eq $.style "managed" -}}
+      {{- $_ := set $labels "app.kubernetes.io/component" (printf "%s-%s" (include "vm.name" $) .) -}}
+    {{- else -}}
+      {{- $_ := set $labels "app" . -}}
+    {{- end -}}
+  {{- end -}}
+  {{- toYaml $labels -}}
+{{- end -}}
+
+{{- define "vm.port.from.flag" -}}
+  {{- $port := .default -}}
+  {{- with .flag -}}
+    {{- $port = regexReplaceAll ".*:(\\d+)" . "${1}" -}}
+  {{- end -}}
+  {{- $port -}}
+{{- end -}}
+
+{{- define "vm.isOpenshift" -}}
+  {{- $Capabilities := (.helm).Capabilities | default .Capabilities -}}
+  {{- if $Capabilities.APIVersions.Has "security.openshift.io/v1" -}}
+    {{- true -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.securityContext" -}}
+  {{- $securityContext := .securityContext | default dict -}}
+  {{- if not (kindIs "map" $securityContext) -}}
+    {{- $securityContext = dict -}}
+  {{- end -}}
+  {{- $securityContext = omit $securityContext "enabled" -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $adaptMode := (((($Values).global).compatibility).openshift).adaptSecurityContext | default "" -}}
+  {{- if or (eq $adaptMode "force") (and (eq $adaptMode "auto") (include "vm.isOpenshift" .)) -}}
+    {{- $securityContext = omit $securityContext "fsGroup" "runAsUser" "runAsGroup" "seLinuxOptions" -}}
+  {{- end -}}
+  {{- toYaml $securityContext -}}
+{{- end -}}
+
+{{- define "vm.probe" -}}
+  {{- $null := (fromYaml "value: null").value -}}
+  {{- $probe := dig .type (default dict) .app.probe -}}
+  {{- $probeType := "" -}}
+  {{- $defaultProbe := default dict -}}
+  {{- if ne (dig "httpGet" $null $probe) $null -}}
+    {{- $defaultProbe = dict "path" (include "vm.probe.http.path" .) "scheme" (include "vm.probe.http.scheme" .) "port" (include "vm.probe.port" .) -}}
+    {{- $probeType = "httpGet" -}}
+  {{- else if ne (dig "tcpSocket" $null $probe) $null -}}
+    {{- $defaultProbe = dict "port" (include "vm.probe.port" .) -}}
+    {{- $probeType = "tcpSocket" -}}
+  {{- end -}}
+  {{- $defaultProbe = ternary (default dict) (dict $probeType $defaultProbe) (empty $probeType) -}}
+  {{- $probe = mergeOverwrite $defaultProbe $probe -}}
+  {{- range $key, $value := $probe -}}
+    {{- if and (has (kindOf $value) (list "object" "map")) (ne $key $probeType) -}}
+      {{- $_ := unset $probe $key -}}
+    {{- end -}}
+  {{- end -}}
+  {{- tpl (toYaml $probe) . -}}
+{{- end -}}
+
+{{- define "vm.probe.http.path" -}}
+  {{- index .app.extraArgs "http.pathPrefix" | default "" | trimSuffix "/" -}}/health
+{{- end -}}
+
+{{- define "vm.probe.http.scheme" -}}
+  {{- $isSecure := false -}}
+  {{- with ((.app).extraArgs).tls -}}
+    {{- $isSecure = eq (toString .) "true" -}}
+  {{- end -}}
+  {{- ternary "HTTPS" "HTTP" $isSecure -}}
+{{- end -}}
+
+{{- define "vm.probe.port" -}}
+  {{- dig "ports" "name" "http" (.app | dict) -}}
+{{- end -}}
+
+{{- define "vm.arg" -}}
+  {{- if and (empty .value) (kindIs "string" .value) (ne (toString .list) "true") -}}
+    {{- .key -}}
+  {{- else if eq (toString .value) "true" -}}
+    -{{ ternary "" "-" (eq (len .key) 1) }}{{ .key }}
+  {{- else -}}
+    -{{ ternary "" "-" (eq (len .key) 1) }}{{ .key }}={{ ternary (toJson .value | squote) .value (has (kindOf .value) (list "map" "slice")) -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.args" -}}
+  {{- $args := default list -}}
+  {{- range $key, $value := . -}}
+    {{- if not $key -}}
+      {{- fail "Empty key in command line args is not allowed" -}}
+    {{- end -}}
+    {{- if kindIs "slice" $value -}}
+      {{- range $v := $value -}}
+        {{- $args = append $args (include "vm.arg" (dict "key" $key "value" $v "list" true)) -}}
+      {{- end -}}
+    {{- else -}}
+      {{- $args = append $args (include "vm.arg" (dict "key" $key "value" $value)) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- toYaml (dict "args" $args) -}}
+{{- end -}}
+
+{{- define "vm.service" -}}
+  {{- include "vm.validate.args" . -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $nameTpl := "" -}}
+  {{- if eq .style "managed" -}}
+    {{- $nameTpl = "vm.managed.fullname" -}}
+  {{- else if eq .style "plain" -}}
+    {{- $nameTpl = "vm.plain.fullname" -}}
+  {{- else -}}
+    {{- fail ".style argument should be either `plain` or `managed`" -}}
+  {{- end -}}
+  {{- include $nameTpl . -}}
+{{- end -}}
+
+{{- define "vm.fqdn" -}}
+  {{- $name := (include "vm.service" .) -}}
+  {{- if hasKey . "appIdx" -}}
+    {{- $name = (printf "%s-%d.%s" $name .appIdx $name) -}}
+  {{- end -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $ns := (include "vm.namespace" .) -}}
+  {{- $fqdn := printf "%s.%s.svc" $name $ns -}}
+  {{- with (($Values.global).cluster).dnsDomain -}}
+    {{- $fqdn = printf "%s.%s" $fqdn . -}}
+  {{- end -}}
+  {{- $fqdn -}}
+{{- end -}}
+
+{{- define "vm.host" -}}
+  {{- $fqdn := (include "vm.fqdn" .) -}}
+  {{- $port := 80 -}}
+  {{- $isSecure := ternary false true (empty .appSecure) -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- if .appKey -}}
+    {{- $appKey := ternary (list .appKey) .appKey (kindIs "string" .appKey) -}}
+    {{- $values := $Values -}}
+    {{- $ctx := . -}}
+    {{- range $ak := $appKey -}}
+      {{- $values = ternary (default dict) (index $values $ak | default dict) (empty $values) -}}
+      {{- $ctx = ternary (default dict) (index $ctx $ak | default dict) (empty $ctx) -}}
+    {{- end -}}
+    {{- $spec := default dict -}}
+    {{- if $ctx -}}
+      {{- $spec = $ctx -}}
+    {{- else if $values -}}
+      {{- $spec = $values -}}
+    {{- end -}}
+    {{- with ($spec.extraArgs).tls -}}
+      {{- $isSecure = eq (toString .) "true" -}}
+    {{- end -}}
+    {{- $port = (ternary 443 80 $isSecure) -}}
+    {{- $port = $spec.port | default ($spec.service).servicePort | default ($spec.service).port | default $port -}}
+    {{- if hasKey . "appIdx" -}}
+      {{- $port = (include "vm.port.from.flag" (dict "flag" ($spec.extraArgs).httpListenAddr "default" $port)) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $fqdn }}:{{ $port -}}
+{{- end -}}
+
+{{- define "vm.url" -}}
+  {{- $host := (include "vm.host" .) -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $proto := "http" -}}
+  {{- $path := .appRoute | default "/" -}}
+  {{- $isSecure := ternary false true (empty .appSecure) -}}
+  {{- if .appKey -}}
+    {{- $appKey := ternary (list .appKey) .appKey (kindIs "string" .appKey) -}}
+    {{- $values := $Values -}}
+    {{- $ctx := . -}}
+    {{- range $ak := $appKey -}}
+      {{- $values = ternary (default dict) (index $values $ak | default dict) (empty $values) -}}
+      {{- $ctx = ternary (default dict) (index $ctx $ak | default dict) (empty $ctx) -}}
+    {{- end -}}
+    {{- $spec := default dict -}}
+    {{- if $values -}}
+      {{- $spec = $values -}}
+    {{- else if $ctx -}}
+      {{- $spec = $ctx -}}
+    {{- end -}}
+    {{- with ($spec.extraArgs).tls -}}
+      {{- $isSecure = eq (toString .) "true" -}}
+    {{- end -}}
+    {{- $proto = (ternary "https" "http" $isSecure) -}}
+    {{- $path = dig "http.pathPrefix" $path ($spec.extraArgs | default dict) -}}
+  {{- end -}}
+  {{- printf "%s://%s%s" $proto $host (trimSuffix "/" $path) -}}
+{{- end -}}
+
+{{- define "vm.ingress.port" -}}
+  {{- $port := dict "name" "http" -}}
+  {{- with .port -}}
+    {{- $numberTypes := list "int" "float64" -}}
+    {{- $port = dict (ternary "number" "name" (has (kindOf .) $numberTypes)) . -}}
+  {{- end -}}
+  {{- toYaml $port -}}
+{{- end -}}
+
+{{- define "vm.license.secret.key" -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $plain := (($Values.license).secret).key | default ((($Values.global).license).secret).key | default "" -}}
+  {{- $managed := (($Values.license).keyRef).key | default ((($Values.global).license).keyRef).key | default "" -}}
+  {{- $plain | default $managed -}}
+{{- end -}}
+
+{{- define "vm.license.secret.name" -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- $plain := (($Values.license).secret).name | default ((($Values.global).license).secret).name | default "" -}}
+  {{- $managed := (($Values.license).keyRef).name | default ((($Values.global).license).keyRef).name | default "" -}}
+  {{- $plain | default $managed -}}
+{{- end -}}
+
+{{- define "vm.license.key" -}}
+  {{- $Values := (.helm).Values | default .Values -}}
+  {{- ($Values.license).key | default (($Values.global).license).key | default "" -}}
+{{- end -}}
+
+{{- define "vm.enterprise.disabled" -}}
+  {{- $licenseKey := (include "vm.license.key" .) -}}
+  {{- $licenseSecretKey := (include "vm.license.secret.key" .) -}}
+  {{- $licenseSecretName := (include "vm.license.secret.name" .) -}}
+  {{- or .noEnterprise (and (or (empty $licenseKey) (eq $licenseKey "")) (or (empty $licenseSecretName) (eq $licenseSecretName "")) (or (empty $licenseSecretKey) (eq $licenseSecretKey ""))) -}}
+{{- end -}}
+
+{{- define "vm.enterprise.only" -}}
+  {{- if eq (include "vm.enterprise.disabled" .) "true" -}}
+    {{- fail `Pass valid license at .Values.license or .Values.global.license if you have an enterprise license for running this software.
+       See https://victoriametrics.com/legal/esa/ for details.
+       Documentation - https://docs.victoriametrics.com/enterprise
+       for more information, visit https://victoriametrics.com/products/enterprise/
+       To request a trial license, go to https://victoriametrics.com/products/enterprise/trial/` -}}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.license.volume" -}}
+  {{- $licenseSecretKey := (include "vm.license.secret.key" .) -}}
+  {{- $licenseSecretName := (include "vm.license.secret.name" .) -}}
+  {{- if and $licenseSecretName $licenseSecretKey (ne $licenseSecretName "") (ne $licenseSecretKey "") -}}
+- name: license-key
+  secret:
+    secretName: {{ $licenseSecretName }}
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.license.mount" -}}
+  {{- $licenseSecretKey := (include "vm.license.secret.key" .) -}}
+  {{- $licenseSecretName := (include "vm.license.secret.name" .) -}}
+  {{- if and $licenseSecretName $licenseSecretKey (ne $licenseSecretName "") (ne $licenseSecretKey "") -}}
+- name: license-key
+  mountPath: /etc/vm-license-key
+  readOnly: true
+  {{- end -}}
+{{- end -}}
+
+{{- define "vm.license.flag" -}}
+  {{- $licenseKey := (include "vm.license.key" .) -}}
+  {{- $licenseSecretKey := (include "vm.license.secret.key" .) -}}
+  {{- $licenseSecretName := (include "vm.license.secret.name" .) -}}
+  {{- if and $licenseKey (ne $licenseKey "") -}}
+license: {{ $licenseKey }}
+  {{- else if and $licenseSecretName $licenseSecretKey (ne $licenseSecretName "") (ne $licenseSecretKey "") -}}
+licenseFile: /etc/vm-license-key/{{ $licenseSecretKey }}
+  {{- end -}}
+{{- end -}}

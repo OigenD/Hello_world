@@ -6,11 +6,15 @@
   {{- end -}}
   {{- $_ := set $args "promscrape.config" "/config/scrape/scrape.yml" -}}
   {{- $_ := set $args "remoteWrite.tmpDataPath" "/tmpData" -}}
+  {{- $supportedRemoteWriteKeys := list "url" "maxDiskUsagePerURL" "queues" "maxInflightRequests" "tmpDataPath" "sendTimeout" "maxBlockSize" "rateLimit" "label" "headers" -}}
   {{- range $i, $rw := $Values.remoteWrite -}}
     {{- if not $rw.url -}}
       {{- fail (printf "`url` is not set for `remoteWrite` idx %d" $i) -}}
     {{- end -}}
     {{- range $rwKey, $rwValue := $rw -}}
+      {{- if not (has $rwKey $supportedRemoteWriteKeys) -}}
+        {{- continue -}}
+      {{- end -}}
       {{- $key := printf "remoteWrite.%s" $rwKey -}}
       {{- $param := index $args $key | default list -}}
       {{- if or (kindIs "slice" $rwValue) (kindIs "map" $rwValue) -}}
